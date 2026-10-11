@@ -1,0 +1,91 @@
+name: Validate reviewed Firecrawl Go SDK repairs
+on:
+  push:
+    branches: [validation/firecrawl-go-comments-20261011]
+    paths: [.github/workflows/validate-go-comments.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  native:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - pr: '5053'
+            head: 701845a7fea87cfe49f0233ecc8b8eb4ee4422f5
+            original: 3d72f2a2a20ec753413fdb0ea3259c8d05b811a2
+          - pr: '5059'
+            head: dbefcef2fea56621a277b82d8fee904a569c16b2
+            original: 0c2ce20614f642300a515d1765d53c98e2b7d569
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: rudycelekli/firecrawl
+          ref: ${{ matrix.head }}
+          path: candidate
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: firecrawl/firecrawl
+          ref: ${{ matrix.original }}
+          path: original
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version: '1.23'
+          cache: false
+      - name: Exact source and native runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C candidate rev-parse HEAD)" = "${{ matrix.head }}"
+          test "$(git -C original rev-parse HEAD)" = "${{ matrix.original }}"
+          mkdir -p "$RUNNER_TEMP/proof"
+          { go version; uname -a; git -C candidate rev-parse HEAD; git -C original rev-parse HEAD; } > "$RUNNER_TEMP/proof/source-runtime.txt"
+      - name: Reproduce mutable timeout on frozen original
+        if: matrix.pr == '5059'
+        working-directory: original/apps/go-sdk
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp "$GITHUB_WORKSPACE/candidate/apps/go-sdk/option/timeout_reuse_test.go" option/timeout_reuse_test.go
+          set +e
+          go test ./option -run '^TestWithTimeoutReuseDoesNotShareMutableDuration$' -count=1 > "$RUNNER_TEMP/proof/original-regression.log" 2>&1
+          result=$?
+          set -e
+          cat "$RUNNER_TEMP/proof/original-regression.log"
+          test "$result" -ne 0
+          grep -q 'reused timeout changed' "$RUNNER_TEMP/proof/original-regression.log"
+      - name: Classify original transport race boundary honestly
+        if: matrix.pr == '5053'
+        working-directory: original/apps/go-sdk
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          go test ./... -race -run 'TestOptionsTransport|TestOptionsSerialization' -count=5 > "$RUNNER_TEMP/proof/original-race.log" 2>&1
+          result=$?
+          set -e
+          cat "$RUNNER_TEMP/proof/original-race.log"
+          echo "$result" > "$RUNNER_TEMP/proof/original-race-exit.txt"
+          if [ "$result" -ne 0 ]; then grep -q 'DATA RACE' "$RUNNER_TEMP/proof/original-race.log"; fi
+      - name: Native build vet format and full race suite
+        working-directory: candidate/apps/go-sdk
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -z "$(gofmt -l .)"
+          go build ./... 2>&1 | tee "$RUNNER_TEMP/proof/build.log"
+          go vet ./... 2>&1 | tee "$RUNNER_TEMP/proof/vet.log"
+          go test ./... -race -count=1 2>&1 | tee "$RUNNER_TEMP/proof/full-race.log"
+          test -z "$(git status --porcelain)"
+      - uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808
+        if: always()
+        with:
+          name: go-sdk-${{ matrix.pr }}-native-proof
+          path: ${{ runner.temp }}/proof/
+          if-no-files-found: error
+          retention-days: 7
