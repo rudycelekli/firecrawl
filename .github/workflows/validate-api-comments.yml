@@ -1,0 +1,157 @@
+name: Bounded existing Firecrawl API comment validation
+on:
+  push:
+    branches: [validation/firecrawl-api-comments-20261011]
+    paths: [.github/workflows/validate-api-comments.yml]
+  workflow_dispatch:
+    inputs:
+      pr:
+        type: choice
+        default: '5067'
+        options: ['5067', '5068', '5069', '5074', '5078', '5079']
+      candidate_head:
+        description: Reviewed 40-character fork commit, empty for frozen original head
+        type: string
+        required: false
+        default: ''
+permissions:
+  contents: read
+concurrency:
+  group: firecrawl-api-existing-comments
+  cancel-in-progress: false
+jobs:
+  api:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    services:
+      redis:
+        image: redis:7
+        ports: ['6379:6379']
+      rabbitmq:
+        image: rabbitmq:3-management
+        ports: ['5672:5672']
+    env:
+      HOST: 0.0.0.0
+      ENV: test
+      TEST_SUITE_SELF_HOSTED: 'true'
+      TEST_API_KEY: test
+      TEST_TEAM_ID: bypass
+      USE_DB_AUTHENTICATION: 'false'
+      REDIS_URL: redis://127.0.0.1:6379
+      REDIS_RATE_LIMIT_URL: redis://127.0.0.1:6379
+      NUQ_RABBITMQ_URL: amqp://127.0.0.1:5672
+      NUQ_WORKER_COUNT: '1'
+      NUM_WORKERS_PER_QUEUE: '1'
+      USE_GO_MARKDOWN_PARSER: 'true'
+      ALLOW_LOCAL_WEBHOOKS: 'true'
+      FDB_VERSION: 7.3.63
+    steps:
+      - name: Select only an existing assigned PR and frozen source
+        id: source
+        shell: bash
+        env:
+          SELECTED_PR: ${{ inputs.pr || '5067' }}
+          CANDIDATE_HEAD: ${{ inputs.candidate_head }}
+        run: |
+          set -euo pipefail
+          case "$SELECTED_PR" in
+            5067) original=62446faec45d5c8647e3e695640e0a6c4c8c41fb; tests=src/scraper/scrapeURL/lib/abortManager.test.ts ;;
+            5068) original=88fd2b7706451a5d0b8ec66fcdf3984fee0be72e; tests="src/lib/search-index-body-timeout.test.ts src/lib/fire-privacy-body-timeout.test.ts" ;;
+            5069) original=29c4da4a709fcd0f5ce23607970585d4025a61e3; tests="src/lib/fire-privacy-chunker.test.ts src/lib/fire-privacy-chunker-transport.test.ts" ;;
+            5074) original=f42c51035ad4663949c389999ab796e77d641d3e; tests=src/lib/__tests__/extraction-primitive-sources.test.ts ;;
+            5078) original=9bd23b2f1d8edb743c3ea2c45a99bff586dd555f; tests=src/lib/__tests__/extraction-nested-arrays.test.ts ;;
+            5079) original=0ae44c145e5fd733d870361a60a934ebbab42462; tests=src/lib/__tests__/spread-schema-definitions.test.ts ;;
+            *) exit 2 ;;
+          esac
+          head="${CANDIDATE_HEAD:-$original}"
+          [[ "$head" =~ ^[0-9a-f]{40}$ ]]
+          { echo "pr=$SELECTED_PR"; echo "original=$original"; echo "head=$head"; echo "tests=$tests"; } >> "$GITHUB_OUTPUT"
+          mkdir -p "$RUNNER_TEMP/proof"
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: rudycelekli/firecrawl
+          ref: ${{ steps.source.outputs.head }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320
+        with:
+          version: 11.4.0
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: '22'
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
+        with:
+          go-version: '1.26'
+          cache: false
+      - name: Verify exact head, original ancestry, and version declarations
+        shell: bash
+        env:
+          EXACT_HEAD: ${{ steps.source.outputs.head }}
+          ORIGINAL_HEAD: ${{ steps.source.outputs.original }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXACT_HEAD"
+          git merge-base --is-ancestor "$ORIGINAL_HEAD" HEAD
+          node -e 'if (require("./apps/api/package.json").packageManager !== "pnpm@11.4.0") process.exit(1)'
+          { git rev-parse HEAD; git merge-base 6f892bc5026efc6355d017ec38dfffb84c228100 HEAD; node --version; pnpm --version; go version; rustc --version; uname -a; } > "$RUNNER_TEMP/proof/runtime.txt"
+          git diff --name-only 6f892bc5026efc6355d017ec38dfffb84c228100...HEAD > "$RUNNER_TEMP/proof/authored-files.txt"
+      - name: Install FoundationDB client required by the API dependency
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL -o "$RUNNER_TEMP/fdb-clients.deb" "https://github.com/apple/foundationdb/releases/download/${FDB_VERSION}/foundationdb-clients_${FDB_VERSION}-1_amd64.deb"
+          sha256sum "$RUNNER_TEMP/fdb-clients.deb" > "$RUNNER_TEMP/proof/fdb-client.sha256"
+          sudo dpkg -i "$RUNNER_TEMP/fdb-clients.deb"
+      - name: Build native Rust module using upstream install lifecycle
+        working-directory: apps/api/native
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout -k 30s 15m pnpm install --frozen-lockfile 2>&1 | tee "$RUNNER_TEMP/proof/native-install.log"
+      - name: Install exact API lockfile using upstream CI bootstrap
+        working-directory: apps/api
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm install --frozen-lockfile --ignore-scripts 2>&1 | tee "$RUNNER_TEMP/proof/api-install.log"
+      - name: Mandatory knip gate without suppression
+        id: knip
+        working-directory: apps/api
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm knip --cache 2>&1 | tee "$RUNNER_TEMP/proof/knip.log"
+      - name: Mandatory lint-staged gate on actual authored files
+        if: ${{ !cancelled() && steps.knip.outcome != 'skipped' }}
+        working-directory: apps/api
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm lint-staged --diff=6f892bc5026efc6355d017ec38dfffb84c228100...HEAD 2>&1 | tee "$RUNNER_TEMP/proof/lint-staged.log"
+          git diff > "$RUNNER_TEMP/proof/formatter-diff.patch"
+          git diff --exit-code
+      - name: Native focused proof through the real API harness
+        if: ${{ !cancelled() && steps.knip.outcome != 'skipped' }}
+        working-directory: apps/api
+        shell: bash
+        env:
+          FOCUSED_TESTS: ${{ steps.source.outputs.tests }}
+        run: |
+          set -euo pipefail
+          read -r -a testfiles <<< "$FOCUSED_TESTS"
+          for testfile in "${testfiles[@]}"; do test -f "$testfile"; done
+          # Harness builds the API/Go module, owns PostgreSQL and all workers,
+          # waits for the real API port, runs Vitest, and cleans up services.
+          # No service mocks or credentials are supplied to the harness.
+          timeout -k 45s 15m pnpm harness pnpm exec vitest run "${testfiles[@]}" --maxWorkers=1 --reporter=default --reporter=junit --outputFile.junit="$RUNNER_TEMP/proof/tests.xml" 2>&1 | tee "$RUNNER_TEMP/proof/harness.log"
+          git -C "$GITHUB_WORKSPACE" diff --exit-code -- apps/api/pnpm-lock.yaml apps/api/native/pnpm-lock.yaml apps/api/sharedLibs/go-html-to-md/go.mod apps/api/sharedLibs/go-html-to-md/go.sum
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "${{ steps.source.outputs.head }}"
+          git -C "$GITHUB_WORKSPACE" diff --exit-code
+          git -C "$GITHUB_WORKSPACE" diff --cached --exit-code
+      - uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808
+        if: always()
+        with:
+          name: api-${{ steps.source.outputs.pr }}-${{ steps.source.outputs.head }}-proof
+          path: ${{ runner.temp }}/proof/
+          if-no-files-found: error
+          retention-days: 7
