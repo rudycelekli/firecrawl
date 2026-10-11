@@ -1,0 +1,158 @@
+name: Validate reviewed Firecrawl SDK repairs
+on:
+  push:
+    branches: [validation/firecrawl-sdk-comments-20261011]
+    paths: [.github/workflows/validate-sdk-comments.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  python:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - pr: '5064'
+            head: ca6a413815fe09bd9dc757f1cf0696c57212fb1e
+            python: '3.12'
+          - pr: '5061'
+            head: 4b0761f44badca72e8c48c732d637691c23cf232
+            python: '3.12'
+          - pr: '5057'
+            head: 3aa9028c0c7921b34aff2dc58348c9dd2bbedafa
+            python: '3.12'
+          - pr: '5057'
+            head: 3aa9028c0c7921b34aff2dc58348c9dd2bbedafa
+            python: '3.8'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: rudycelekli/firecrawl
+          ref: ${{ matrix.head }}
+          path: candidate
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        if: matrix.python == '3.8'
+        with:
+          repository: firecrawl/firecrawl
+          ref: aa78251979b5843578cdc914bd424d3494ef9744
+          path: original
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Record exact source runtime and declared dependencies
+        working-directory: candidate/apps/python-sdk
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${{ matrix.head }}"
+          mkdir -p "$RUNNER_TEMP/proof"
+          { git rev-parse HEAD; python --version; uname -a; } > "$RUNNER_TEMP/proof/runtime.txt"
+          python -m pip install -r requirements.txt
+          python -m pip install --no-deps -e .
+          python -m pip freeze > "$RUNNER_TEMP/proof/dependencies.txt"
+      - name: Native Python3.8 original regression
+        if: matrix.python == '3.8'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C original rev-parse HEAD)" = aa78251979b5843578cdc914bd424d3494ef9744
+          cp candidate/apps/python-sdk/firecrawl/__tests__/unit/v2/watcher/test_async_status_dispatch.py original/apps/python-sdk/firecrawl/__tests__/unit/v2/watcher/test_async_status_dispatch.py
+          cd original/apps/python-sdk
+          export PYTHONPATH="$PWD"
+          python -c 'import firecrawl.v2.watcher_async as w; import os; assert os.path.abspath(w.__file__).startswith(os.getcwd() + os.sep)'
+          set +e
+          python -m pytest firecrawl/__tests__/unit/v2/watcher/test_async_status_dispatch.py -q -k test_sync_status_methods_run_outside_event_loop > "$RUNNER_TEMP/proof/original-regression.log" 2>&1
+          result=$?
+          set -e
+          cat "$RUNNER_TEMP/proof/original-regression.log"
+          test "$result" -ne 0
+          grep -q 'AttributeError.*to_thread' "$RUNNER_TEMP/proof/original-regression.log"
+          grep -q '4 failed' "$RUNNER_TEMP/proof/original-regression.log"
+      - name: Native package unit tests or minimum-version watcher regression
+        working-directory: candidate/apps/python-sdk
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PYTHONPATH="$PWD"
+          if [ "${{ matrix.python }}" = '3.8' ]; then
+            python -m pytest firecrawl/__tests__/unit/v2/watcher/test_async_status_dispatch.py -q 2>&1 | tee "$RUNNER_TEMP/proof/tests.log"
+            grep -q '9 passed' "$RUNNER_TEMP/proof/tests.log"
+          else
+            python -m pytest firecrawl/__tests__/unit -q 2>&1 | tee "$RUNNER_TEMP/proof/tests.log"
+          fi
+          test -z "$(git status --porcelain)"
+      - uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808
+        if: always()
+        with:
+          name: python-sdk-${{ matrix.pr }}-${{ matrix.python }}-proof
+          path: ${{ runner.temp }}/proof/
+          if-no-files-found: error
+          retention-days: 7
+  ruby:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: rudycelekli/firecrawl
+          ref: 7bd7346b851299f252e46241514270b9baccf669
+          persist-credentials: false
+      - uses: ruby/setup-ruby@e81a8fa391b11a595c1b7ed84177cc0fe02faf83
+        with:
+          ruby-version: '3.3'
+          working-directory: apps/ruby-sdk
+          bundler-cache: true
+      - name: Native Ruby package tests
+        working-directory: apps/ruby-sdk
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = 7bd7346b851299f252e46241514270b9baccf669
+          mkdir -p "$RUNNER_TEMP/proof"
+          { git rev-parse HEAD; ruby --version; bundle list; uname -a; } > "$RUNNER_TEMP/proof/runtime.txt"
+          bundle exec rake test 2>&1 | tee "$RUNNER_TEMP/proof/tests.log"
+          grep -q '93 runs, 361 assertions, 0 failures, 0 errors, 0 skips' "$RUNNER_TEMP/proof/tests.log"
+      - uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808
+        if: always()
+        with:
+          name: ruby-sdk-5055-proof
+          path: ${{ runner.temp }}/proof/
+          if-no-files-found: error
+          retention-days: 7
+  javascript:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: rudycelekli/firecrawl
+          ref: 4b0761f44badca72e8c48c732d637691c23cf232
+          persist-credentials: false
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320
+        with:
+          version: 10
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+      - name: Native JS package unit tests and build
+        working-directory: apps/js-sdk/firecrawl
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = 4b0761f44badca72e8c48c732d637691c23cf232
+          mkdir -p "$RUNNER_TEMP/proof"
+          { git rev-parse HEAD; node --version; pnpm --version; uname -a; } > "$RUNNER_TEMP/proof/runtime.txt"
+          pnpm install --frozen-lockfile
+          pnpm run test:unit 2>&1 | tee "$RUNNER_TEMP/proof/tests.log"
+          pnpm run build 2>&1 | tee "$RUNNER_TEMP/proof/build.log"
+      - uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808
+        if: always()
+        with:
+          name: js-sdk-5061-proof
+          path: ${{ runner.temp }}/proof/
+          if-no-files-found: error
+          retention-days: 7
