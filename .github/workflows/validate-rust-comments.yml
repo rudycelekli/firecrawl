@@ -1,0 +1,110 @@
+name: Validate reviewed Firecrawl Rust SDK comments
+on:
+  workflow_dispatch:
+    inputs:
+      head5063:
+        description: Exact reviewed candidate SHA for PR 5063
+        required: true
+        type: string
+      head5065:
+        description: Exact reviewed candidate SHA for PR 5065
+        required: true
+        type: string
+defaults:
+  run:
+    shell: bash
+permissions:
+  contents: read
+jobs:
+  native-rust:
+    strategy:
+      fail-fast: false
+      matrix:
+        pr: ['5063', '5065']
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      EXPECTED_HEAD: ${{ matrix.pr == '5063' && inputs.head5063 || inputs.head5065 }}
+      PR_NUMBER: ${{ matrix.pr }}
+    steps:
+      - name: Validate exact head input
+        run: |
+          [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]]
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: validation/firecrawl-rust-${{ matrix.pr }}-20261011
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Guard reviewed candidate and record environment
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          mkdir -p proof
+          git rev-parse HEAD > proof/head.txt
+          git status --porcelain > proof/initial-status.txt
+          test ! -s proof/initial-status.txt
+      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7
+        with:
+          components: clippy,rustfmt
+      - name: Record toolchain
+        run: |
+          rustc --version | tee proof/rustc.txt
+          cargo --version | tee proof/cargo.txt
+      - name: Prove initial-page regressions against original 5065 source
+        if: matrix.pr == '5065'
+        working-directory: apps/rust-sdk
+        run: |
+          set -euo pipefail
+          original=508409e5ec09f740c36b25a8139c8db03d5ba017
+          restore() { git restore --source="$EXPECTED_HEAD" -- src/batch_scrape.rs src/crawl.rs src/monitor.rs; }
+          trap restore EXIT
+          for file in batch_scrape.rs crawl.rs monitor.rs; do
+            git show "$original:apps/rust-sdk/src/$file" > "src/$file"
+          done
+          set +e
+          cargo test --test pagination_initial_page initial_status_aliases -- --nocapture > ../../proof/5065-before.log 2>&1
+          result=$?
+          set -e
+          cat ../../proof/5065-before.log
+          test "$result" -eq 101
+          grep -Eq 'test result: FAILED\. 0 passed; 3 failed;' ../../proof/5065-before.log
+          for kind in crawl batch monitor; do
+            grep -Eq "${kind}_initial_status_aliases.*FAILED" ../../proof/5065-before.log
+          done
+          restore
+          trap - EXIT
+          test -z "$(git status --porcelain -- src/batch_scrape.rs src/crawl.rs src/monitor.rs)"
+      - name: Check formatting
+        working-directory: apps/rust-sdk
+        run: cargo fmt --check 2>&1 | tee ../../proof/fmt.log
+      - name: Build all targets
+        working-directory: apps/rust-sdk
+        run: cargo build --all-targets 2>&1 | tee ../../proof/build-all.log
+      - name: Run scoped clippy
+        working-directory: apps/rust-sdk
+        run: cargo clippy --all-targets -- -D warnings -A clippy::needless_borrows_for_generic_args -A clippy::redundant_closure -A clippy::large_enum_variant -A clippy::extra_unused_lifetimes 2>&1 | tee ../../proof/clippy.log
+      - name: Run complete mocked unit suite
+        working-directory: apps/rust-sdk
+        run: cargo test --lib 2>&1 | tee ../../proof/unit.log
+      - name: Prove new URL constraint tests
+        if: matrix.pr == '5063'
+        working-directory: apps/rust-sdk
+        run: cargo test --lib url_constraint_contract_regression 2>&1 | tee ../../proof/5063-focused.log
+      - name: Prove pagination regressions and valid-page controls
+        if: matrix.pr == '5065'
+        working-directory: apps/rust-sdk
+        run: |
+          cargo test --test pagination_initial_page 2>&1 | tee ../../proof/5065-after.log
+          cargo test --test pagination_cycles 2>&1 | tee ../../proof/5065-existing-cycles.log
+      - name: Build examples
+        working-directory: apps/rust-sdk
+        run: cargo build --examples 2>&1 | tee ../../proof/examples.log
+      - name: Final exact-head source guard
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test -z "$(git status --porcelain --untracked-files=no)"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: reviewed-rust-${{ matrix.pr }}-proof
+          path: proof/
+          retention-days: 7
