@@ -3,7 +3,8 @@ import hashlib,json,os,re,subprocess,sys,xml.etree.ElementTree as ET
 from pathlib import Path
 source=Path.cwd(); assets=Path(os.environ['API_PROOF_ASSETS']); proof=Path(os.environ['API_PROOF_OUTPUT']);proof.mkdir(parents=True,exist_ok=True)
 plans=json.loads((assets/'plans.json').read_text());selected=os.environ.get('SELECTED_PR','all')
-if selected!='all':plans=[p for p in plans if str(p['number'])==selected]
+if selected=='remaining':plans=[p for p in plans if p['number']>=5074]
+elif selected!='all':plans=[p for p in plans if str(p['number'])==selected]
 assert plans
 base='6f892bc5026efc6355d017ec38dfffb84c228100'
 def run(args, log=None, expected=0):
@@ -29,7 +30,7 @@ def mutate_coverage(number):
   f=source/'apps/api/src/scraper/scrapeURL/lib/abortManager.ts';s=f.read_text();assert s.count('this.inner = inner;')==1;f.write_text(s.replace('this.inner = inner;','this.inner = inner instanceof Error ? new Error(inner.message) : inner;'))
  elif number==5074:
   for relative in ['helpers/source-tracker.ts','fire-0/helpers/source-tracker-f0.ts']:
-   f=source/'apps/api/src/lib/extract'/relative;s=f.read_text();needle='JSON.stringify(resultItem) === itemKey';assert needle in s;f.write_text(s.replace(needle,'typeof resultItem !== "string" && JSON.stringify(resultItem) === itemKey'))
+   f=source/'apps/api/src/lib/extract'/relative;s=f.read_text();needle='return item === originalItem;';assert s.count(needle)==1;f.write_text(s.replace(needle,'return typeof item !== "string" && item === originalItem;'))
 def native(plan,out,label):
  xml=out/f'{label}.xml';args=['timeout','-k','45s','15m','pnpm','harness','pnpm','exec','vitest','run',*plan['tests'],'--maxWorkers=1','--reporter=default','--reporter=junit',f'--outputFile.junit={xml}']
  r=subprocess.run(args,cwd=source/'apps/api',text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT);(out/f'{label}.log').write_text(r.stdout);print(r.stdout,flush=True)

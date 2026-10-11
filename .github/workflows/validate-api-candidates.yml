@@ -8,7 +8,7 @@ on:
       pr:
         type: choice
         default: all
-        options: [all, '5067', '5068', '5069', '5074', '5078', '5079']
+        options: [remaining, all, '5067', '5068', '5069', '5074', '5078', '5079']
 permissions:
   contents: read
 concurrency:
@@ -91,7 +91,7 @@ jobs:
         env:
           API_PROOF_ASSETS: ${{ github.workspace }}/validation/.github/validation/api-comments
           API_PROOF_OUTPUT: ${{ runner.temp }}/proof
-          SELECTED_PR: ${{ inputs.pr || 'all' }}
+          SELECTED_PR: ${{ inputs.pr || 'remaining' }}
         run: |
           set -euo pipefail
           # Runner does not commit/push. It runs real knip/lint-staged on staged
