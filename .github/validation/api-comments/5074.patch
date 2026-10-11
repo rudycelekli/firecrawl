@@ -1,0 +1,11 @@
+--- a/apps/api/src/lib/__tests__/extraction-primitive-sources.test.ts
++++ b/apps/api/src/lib/__tests__/extraction-primitive-sources.test.ts
+@@ -12,7 +12,7 @@
+         map: f0 ? (tracker as SourceTracker_F0).mapSourcesToFinalItems_F0.bind(tracker) : (tracker as SourceTracker).mapSourcesToFinalItems.bind(tracker),
+       };
+     };
+-    for (const value of [42, false, null]) {
++    for (const value of [42, false, null, "matching string"]) {
+       it(`retains the matching source of root array value ${value}`, () => {
+         const tracker = create();
+         tracker.transform([{ extract: [value], url: "https://a.test" }, { extract: ["other"], url: "https://b.test" }], {}, false);

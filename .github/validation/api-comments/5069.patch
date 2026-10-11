@@ -1,0 +1,48 @@
+--- a/apps/api/src/lib/fire-privacy-chunker.test.ts
++++ b/apps/api/src/lib/fire-privacy-chunker.test.ts
+@@ -124,3 +124,34 @@
+   expect(() => chunkMarkdown("🔒", { maxBytes: 3 })).toThrow(RangeError);
+   expect(chunkMarkdown("a", { maxChars: 1, maxBytes: 1 })).toEqual([{ text: "a", start: 0 }]);
+ });
++
++
++describe("fractional character budgets", () => {
++  it("retains integer span offsets and reconstructs ASCII text", () => {
++    const chunks = chunkMarkdown("abcd", { maxChars: 1.5 });
++    expect(chunks).toEqual([
++      { text: "a", start: 0 },
++      { text: "b", start: 1 },
++      { text: "c", start: 2 },
++      { text: "d", start: 3 },
++    ]);
++  });
++
++  it("rejects a budget that cannot fit the next Unicode code point", () => {
++    expect(() => chunkMarkdown("🔒a", { maxChars: 1.5 })).toThrow(
++      "budgets cannot fit the next code point",
++    );
++  });
++
++  it("keeps surrogate pairs and integer offsets when fractional budget permits them", () => {
++    const text = "🔒a🔒b";
++    const chunks = chunkMarkdown(text, { maxChars: 2.5 });
++    expect(chunks.map(chunk => chunk.text).join("")).toBe(text);
++    for (const chunk of chunks) {
++      expect(Number.isInteger(chunk.start)).toBe(true);
++      expect(chunk.text.length).toBeGreaterThan(0);
++      expect(chunk.text.length).toBeLessThanOrEqual(2.5);
++      expect(text.slice(chunk.start, chunk.start + chunk.text.length)).toBe(chunk.text);
++    }
++  });
++});
+--- a/apps/api/src/lib/fire-privacy-chunker.ts
++++ b/apps/api/src/lib/fire-privacy-chunker.ts
+@@ -114,7 +114,7 @@
+       if (safeEnd <= cursor) safeEnd = tentativeEnd;
+     }
+ 
+-    safeEnd = codePointBoundary(text, safeEnd);
++    safeEnd = codePointBoundary(text, Math.floor(safeEnd));
+     let chunkText = text.slice(cursor, safeEnd);
+ 
+     // Byte-budget enforcement for non-ASCII text. Rare on web markdown

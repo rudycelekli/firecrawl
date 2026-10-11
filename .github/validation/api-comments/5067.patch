@@ -1,0 +1,18 @@
+--- a/apps/api/src/scraper/scrapeURL/lib/abortManager.test.ts
++++ b/apps/api/src/scraper/scrapeURL/lib/abortManager.test.ts
+@@ -31,6 +31,7 @@
+           expect(delivered).toBe(0);
+           expect(active.isAborted()).toBe(true);
+           expect(active.asSignal().reason).toBeInstanceOf(AbortManagerThrownError);
++          expect((active.asSignal().reason as AbortManagerThrownError).inner).toBe(inner);
+         } finally {
+           active.dispose();
+         }
+@@ -52,6 +53,7 @@
+       controller.abort();
+       expect(manager.asSignal()).toBe(signal);
+       expect(signal.reason).toMatchObject({ tier: "engine", inner });
++      expect((signal.reason as AbortManagerThrownError).inner).toBe(inner);
+       expect(() => manager.throwIfAborted()).toThrow(AbortManagerThrownError);
+     } finally {
+       manager.dispose();

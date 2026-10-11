@@ -1,0 +1,91 @@
+--- a/apps/api/src/lib/fire-privacy-body-timeout.test.ts
++++ b/apps/api/src/lib/fire-privacy-body-timeout.test.ts
+@@ -6,12 +6,15 @@
+ import { redactText } from "./fire-privacy-client";
+ 
+ describe("fire-privacy response body deadline", () => {
+-  for (const mode of ["stalled", "success", "invalid", "unavailable"] as const) {
++  for (const mode of ["stalled", "success", "invalid", "unavailable", "unavailable-stalled"] as const) {
+     it(`handles a native HTTP ${mode} response`, async () => {
++      let responseClosed: (() => void) | undefined;
++      const closed = new Promise<void>(resolve => { responseClosed = resolve; });
+       const server = createServer((_req, res) => {
+-        res.statusCode = mode === "unavailable" ? 503 : 200;
++        res.once("close", () => responseClosed?.());
++        res.statusCode = mode.startsWith("unavailable") ? 503 : 200;
+         res.setHeader("content-type", "application/json");
+-        if (mode === "stalled") {
++        if (mode === "stalled" || mode === "unavailable-stalled") {
+           res.flushHeaders();
+           res.write('{"redacted_text":');
+         } else if (mode === "success") {
+@@ -25,6 +28,7 @@
+       await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+       settings.FIRE_PRIVACY_URL = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+       let guard: ReturnType<typeof setTimeout> | undefined;
++      const started = performance.now();
+       const pending = redactText({ text: "owned input", timeoutMs: 50 });
+       try {
+         const out = await Promise.race([
+@@ -36,7 +40,21 @@
+           expect(out.redactedMarkdown).toBe("redacted");
+         } else {
+           expect(out.status).toBe("failed");
+-          expect(out.reason).toBe(mode === "stalled" ? "timeout" : mode === "unavailable" ? "service_unavailable" : "error");
++          expect(out.reason).toBe(mode === "stalled" ? "timeout" : mode.startsWith("unavailable") ? "service_unavailable" : "error");
++        }
++        if (mode === "stalled") {
++          const elapsed = performance.now() - started;
++          expect(elapsed).toBeGreaterThanOrEqual(35);
++          expect(elapsed).toBeLessThan(150);
++        }
++        if (mode === "unavailable-stalled") {
++          await Promise.race([
++            closed,
++            new Promise<never>((_resolve, reject) => {
++              clearTimeout(guard);
++              guard = setTimeout(() => reject(new Error("error response body remains pinned")), 150);
++            }),
++          ]);
+         }
+       } finally {
+         clearTimeout(guard);
+--- a/apps/api/src/lib/fire-privacy-client.ts
++++ b/apps/api/src/lib/fire-privacy-client.ts
+@@ -268,7 +268,13 @@
+     return { ok: false, reason };
+   }
+   if (!response.ok) {
+-    clearTimeout(timer);
++    try {
++      await response.body?.cancel();
++    } catch {
++      // Preserve the upstream status if cancellation races the deadline.
++    } finally {
++      clearTimeout(timer);
++    }
+     const reason: RedactionReason =
+       response.status === 503 ? "service_unavailable" : "error";
+     logger?.warn("fire-privacy returned non-2xx", {
+--- a/apps/api/src/lib/search-index-body-timeout.test.ts
++++ b/apps/api/src/lib/search-index-body-timeout.test.ts
+@@ -28,6 +28,7 @@
+       await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+       const client = new SearchIndexClient({ baseUrl: `http://127.0.0.1:${(server.address() as { port: number }).port}`, timeout: 50 });
+       let guard: ReturnType<typeof setTimeout> | undefined;
++      const started = performance.now();
+       const pending = client.health();
+       try {
+         const healthy = await Promise.race([
+@@ -35,6 +36,11 @@
+           new Promise<never>((_resolve, reject) => { guard = setTimeout(() => reject(new Error("body exceeded consumer deadline")), 300); }),
+         ]);
+         expect(healthy).toBe(mode === "success");
++        if (mode === "stalled") {
++          const elapsed = performance.now() - started;
++          expect(elapsed).toBeGreaterThanOrEqual(35);
++          expect(elapsed).toBeLessThan(150);
++        }
+       } finally {
+         clearTimeout(guard);
+         server.closeAllConnections();

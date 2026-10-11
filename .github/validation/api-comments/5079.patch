@@ -1,0 +1,47 @@
+--- a/apps/api/src/lib/__tests__/spread-schema-definitions.test.ts
++++ b/apps/api/src/lib/__tests__/spread-schema-definitions.test.ts
+@@ -18,6 +18,24 @@
+         expect(new Ajv().compile(singleAnswerSchema)({ label: "ok" })).toBe(true);
+       });
+     }
++    for (const defs of ["$defs", "definitions"]) {
++      it(`retains the base URI of relative references in ${defs}`, async () => {
++        const schema = {
++          $id: "https://schema.example.test/root.json",
++          type: "object",
++          properties: { rows: { type: "array", items: { $ref: `#/${defs}/Node` } } },
++          [defs]: { Node: { $ref: "child.json" } },
++        };
++        const external = { $id: "https://schema.example.test/child.json", type: "string" };
++        const valid = { rows: ["ok"] };
++        expect(new Ajv().addSchema(external).compile(schema)(valid)).toBe(true);
++        const { multiEntitySchema } = await split(await dereferenceSchema(schema), ["rows"]);
++        const validate = new Ajv().addSchema(external).compile(multiEntitySchema);
++        expect(multiEntitySchema.$id).toBe(schema.$id);
++        expect(validate(valid)).toBe(true);
++        expect(validate({ rows: [42] })).toBe(false);
++      });
++    }
+     it("keeps ordinary schemas valid without adding definitions", async () => {
+       const { multiEntitySchema } = await split({ type: "object", properties: { rows: { type: "array", items: { type: "string" } } } }, ["rows"]);
+       expect(new Ajv().compile(multiEntitySchema)({ rows: ["ok"] })).toBe(true);
+--- a/apps/api/src/lib/extract/fire-0/helpers/spread-schemas-f0.ts
++++ b/apps/api/src/lib/extract/fire-0/helpers/spread-schemas-f0.ts
+@@ -9,6 +9,7 @@
+   let multiEntitySchema: any = {
+     type: "object",
+     properties: {},
++    ...(schema.$id ? { $id: schema.$id } : {}),
+     ...(schema.$defs ? { $defs: schema.$defs } : {}),
+     ...(schema.definitions ? { definitions: schema.definitions } : {}),
+     ...(schema.required ? { required: [] } : {}),
+--- a/apps/api/src/lib/extract/helpers/spread-schemas.ts
++++ b/apps/api/src/lib/extract/helpers/spread-schemas.ts
+@@ -11,6 +11,7 @@
+   let multiEntitySchema: any = {
+     type: "object",
+     properties: {},
++    ...(schema.$id ? { $id: schema.$id } : {}),
+     ...(schema.$defs ? { $defs: schema.$defs } : {}),
+     ...(schema.definitions ? { definitions: schema.definitions } : {}),
+     ...(schema.required ? { required: [] } : {}),

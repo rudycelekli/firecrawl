@@ -1,0 +1,121 @@
+[
+  {
+    "number": 5067,
+    "head": "62446faec45d5c8647e3e695640e0a6c4c8c41fb",
+    "patch_sha256": "a27cfa36246869f6c92d9c0f77ce541a213f3a4c87e5aaba0ee37f41bfa15ac9",
+    "allowed_files": [
+      "apps/api/src/scraper/scrapeURL/lib/abortManager.test.ts",
+      "apps/api/src/scraper/scrapeURL/lib/abortManager.ts"
+    ],
+    "tests": [
+      "src/scraper/scrapeURL/lib/abortManager.test.ts"
+    ],
+    "native_tree": "ec5e6efbd9d499006f7e2fdc289d122add01df16",
+    "expected_regression": {
+      "name_pattern": "pre-aborted (constructor|add) source prevents native HTTP delivery|future abort preserves signal identity and wrapped thrown reason",
+      "reason_pattern": "expected.*(?:to be|Object.is equality)"
+    }
+  },
+  {
+    "number": 5068,
+    "head": "88fd2b7706451a5d0b8ec66fcdf3984fee0be72e",
+    "patch_sha256": "1116eaf1b9a3de9dc6bec10a3656256475c786eb77f97ec2954602a9c12f168f",
+    "allowed_files": [
+      "apps/api/src/lib/fire-privacy-body-timeout.test.ts",
+      "apps/api/src/lib/fire-privacy-client.ts",
+      "apps/api/src/lib/search-index-body-timeout.test.ts",
+      "apps/api/src/lib/search-index-client.ts"
+    ],
+    "tests": [
+      "src/lib/search-index-body-timeout.test.ts",
+      "src/lib/fire-privacy-body-timeout.test.ts"
+    ],
+    "native_tree": "ec5e6efbd9d499006f7e2fdc289d122add01df16",
+    "expected_regression": {
+      "name_pattern": "handles a native HTTP unavailable-stalled response",
+      "reason_pattern": "error response body remains pinned"
+    }
+  },
+  {
+    "number": 5069,
+    "head": "29c4da4a709fcd0f5ce23607970585d4025a61e3",
+    "patch_sha256": "c2d9ca94f6e406a1e3a52f26dc2be1f2294d4c06a92e6d7bbf5d93efb437bd4f",
+    "allowed_files": [
+      "apps/api/src/lib/fire-privacy-chunker-transport.test.ts",
+      "apps/api/src/lib/fire-privacy-chunker.test.ts",
+      "apps/api/src/lib/fire-privacy-chunker.ts"
+    ],
+    "tests": [
+      "src/lib/fire-privacy-chunker.test.ts",
+      "src/lib/fire-privacy-chunker-transport.test.ts"
+    ],
+    "native_tree": "ec5e6efbd9d499006f7e2fdc289d122add01df16",
+    "expected_regression": {
+      "name_pattern": "retains integer span offsets and reconstructs ASCII text",
+      "reason_pattern": "deeply equal"
+    }
+  },
+  {
+    "number": 5074,
+    "head": "f42c51035ad4663949c389999ab796e77d641d3e",
+    "patch_sha256": "0292b0d859dd8eb500c0006c956ad85e1292ec7ca2f4c0ca71b04e483797c344",
+    "allowed_files": [
+      "apps/api/src/lib/__tests__/extraction-primitive-sources.test.ts",
+      "apps/api/src/lib/extract/fire-0/helpers/source-tracker-f0.ts",
+      "apps/api/src/lib/extract/helpers/source-tracker.ts"
+    ],
+    "tests": [
+      "src/lib/__tests__/extraction-primitive-sources.test.ts"
+    ],
+    "native_tree": "ec5e6efbd9d499006f7e2fdc289d122add01df16",
+    "expected_regression": {
+      "name_pattern": "retains the matching source of root array value matching string",
+      "reason_pattern": "deeply equal"
+    }
+  },
+  {
+    "number": 5078,
+    "head": "9bd23b2f1d8edb743c3ea2c45a99bff586dd555f",
+    "patch_sha256": "78e8712f580cc108207fd44ed6b4371e2108cdbc2317c492c00b2736d86a7b02",
+    "allowed_files": [
+      "apps/api/src/lib/__tests__/extraction-nested-arrays.test.ts",
+      "apps/api/src/lib/extract/fire-0/extraction-service-f0.ts",
+      "apps/api/src/lib/extract/fire-0/helpers/deduplicate-objs-array-f0.ts",
+      "apps/api/src/lib/extract/fire-0/helpers/merge-null-val-objs-f0.ts",
+      "apps/api/src/lib/extract/fire-0/helpers/mix-schema-objs-f0.ts",
+      "apps/api/src/lib/extract/fire-0/helpers/transform-array-to-obj-f0.ts",
+      "apps/api/src/lib/extract/helpers/deduplicate-objs-array.ts",
+      "apps/api/src/lib/extract/helpers/merge-null-val-objs.ts",
+      "apps/api/src/lib/extract/helpers/mix-schema-objs.ts",
+      "apps/api/src/lib/extract/helpers/transform-array-to-obj.ts"
+    ],
+    "tests": [
+      "src/lib/__tests__/extraction-nested-arrays.test.ts",
+      "src/lib/__tests__/deduplicate-obs-array.test.ts",
+      "src/lib/__tests__/mix-schemas.test.ts"
+    ],
+    "native_tree": "ec5e6efbd9d499006f7e2fdc289d122add01df16",
+    "expected_regression": {
+      "name_pattern": "preserves repeated matrix rows according to uniqueItems=false",
+      "reason_pattern": "deeply equal"
+    }
+  },
+  {
+    "number": 5079,
+    "head": "0ae44c145e5fd733d870361a60a934ebbab42462",
+    "patch_sha256": "caaa072acfa1b0e18e9f228bdda73c47a32a7d5c78c2bcbf1ddc73cc1c4b1bfb",
+    "allowed_files": [
+      "apps/api/src/lib/__tests__/spread-schema-definitions.test.ts",
+      "apps/api/src/lib/extract/fire-0/helpers/spread-schemas-f0.ts",
+      "apps/api/src/lib/extract/helpers/spread-schemas.ts"
+    ],
+    "tests": [
+      "src/lib/__tests__/spread-schema-definitions.test.ts"
+    ],
+    "native_tree": "ec5e6efbd9d499006f7e2fdc289d122add01df16",
+    "expected_regression": {
+      "name_pattern": "retains the base URI of relative references in (\\$defs|definitions)",
+      "reason_pattern": "resolve reference child\\.json"
+    }
+  }
+]

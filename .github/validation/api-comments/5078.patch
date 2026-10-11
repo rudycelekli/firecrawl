@@ -1,0 +1,247 @@
+--- a/apps/api/src/lib/__tests__/extraction-nested-arrays.test.ts
++++ b/apps/api/src/lib/__tests__/extraction-nested-arrays.test.ts
+@@ -1,5 +1,6 @@
+ import { describe, expect, it } from "vitest";
+ import Ajv from "ajv";
++import { dereferenceSchema } from "../extract/helpers/dereference-schema";
+ import { mixSchemaObjects } from "../extract/helpers/mix-schema-objs";
+ import { mixSchemaObjects_F0 } from "../extract/fire-0/helpers/mix-schema-objs-f0";
+ import { transformArrayToObject } from "../extract/helpers/transform-array-to-obj";
+@@ -34,14 +35,62 @@
+       expect(completions.every(completion => validate(completion))).toBe(true);
+       const transformed = transform(schema, completions);
+       expect(transformed).toEqual({ matrix: [[1, 2], [3, 4]] });
+-      const result = await mix(schema, {}, merge(deduplicate(transformed)));
++      const result = await mix(schema, {}, merge(deduplicate(transformed, schema)));
+       expect(validate(result)).toBe(true);
+       expect(result).toEqual({ matrix: [[1, 2], [3, 4]] });
+     });
++    for (const uniqueItems of [false, true]) {
++      it(`preserves repeated matrix rows according to uniqueItems=${uniqueItems}`, async () => {
++        const schema = { type: "object", properties: { matrix: { type: "array", uniqueItems, items: { type: "array", items: { type: "number" } } } } };
++        const transformed = transform(schema, [{ matrix: [[1, 2], [1, 2]] }]);
++        const expected = { matrix: uniqueItems ? [[1, 2]] : [[1, 2], [1, 2]] };
++        expect(transformed).toEqual(expected);
++        const result = await mix(schema, {}, merge(deduplicate(transformed, schema)));
++        expect(result).toEqual(expected);
++        expect(new Ajv().compile(schema)(result)).toBe(true);
++      });
++    }
++    for (const items of [
++      [{ type: "array", items: { type: "number" } }],
++      { items: { type: "number" } },
++      { type: ["array", "null"], items: { type: "number" } },
++    ]) {
++      it(`preserves non-plain matrix item declarations ${JSON.stringify(items)}`, async () => {
++        const schema = { type: "object", properties: { matrix: { type: "array", items } } };
++        const data = { matrix: [[1, 2], [3, 4]] };
++        expect(await mix(schema, {}, data)).toEqual(data);
++      });
++    }
++    for (const [itemSchema, values] of [
++      [{ type: "string" }, ["a", "b"]],
++      [{ type: "string", items: { type: "number" } }, ["a", "b"]],
++      [{ type: "object", properties: { value: { type: "string" } } }, [{ value: "a" }, { value: "b" }]],
++      [{ type: "object", items: { type: "number" }, properties: { value: { type: "string" } } }, [{ value: "a" }, { value: "b" }]],
++      [{ type: "array", items: { type: "number" } }, [[1, 2], [3, 4]]],
++    ] as const) {
++      it(`derives rank from resolved local definitions for ${itemSchema.type} items`, async () => {
++        const root = {
++          type: "object",
++          properties: { values: { type: "array", items: { $ref: "#/$defs/Item" } } },
++          $defs: { Item: itemSchema },
++        };
++        // The real F0 extraction consumer dereferences before splitting and
++        // transforming; the resulting item schema supplies the actual rank.
++        const schema = await dereferenceSchema(root);
++        const completions = [{ values: [values[0]] }, { values: [values[1]] }];
++        const transformed = transform(schema, completions);
++        const result = await mix(schema, {}, merge(deduplicate(transformed, schema)));
++        expect(result).toEqual({ values });
++        expect(new Ajv().compile(root)(result)).toBe(true);
++        if (itemSchema.type !== "array") {
++          expect(await mix(schema, {}, { values: [[values[0]], [values[1]]] })).toEqual({ values });
++        }
++      });
++    }
+     it("retains scalar rank through the same completion producer pipeline", async () => {
+       const schema = { type: "object", properties: { values: { type: "array", items: { type: "number" } } } };
+       const transformed = transform(schema, [{ values: [1] }, { values: [2] }]);
+-      expect(await mix(schema, {}, merge(deduplicate(transformed)))).toEqual({ values: [1, 2] });
++      expect(await mix(schema, {}, merge(deduplicate(transformed, schema)))).toEqual({ values: [1, 2] });
+     });
+     it("continues flattening chunk wrappers for scalar-item arrays", async () => {
+       const schema = { properties: { values: { type: "array", items: { type: "number" } } } };
+--- a/apps/api/src/lib/extract/fire-0/extraction-service-f0.ts
++++ b/apps/api/src/lib/extract/fire-0/extraction-service-f0.ts
+@@ -585,7 +585,7 @@
+       sourceTracker.trackPreDeduplicationSources_F0(multiEntityResult);
+ 
+       // Apply deduplication and merge
+-      multiEntityResult = deduplicateObjectsArray_F0(multiEntityResult);
++      multiEntityResult = deduplicateObjectsArray_F0(multiEntityResult, multiEntitySchema);
+       multiEntityResult = mergeNullValObjs_F0(multiEntityResult);
+ 
+       // Map sources to final deduplicated/merged items
+--- a/apps/api/src/lib/extract/fire-0/helpers/deduplicate-objs-array-f0.ts
++++ b/apps/api/src/lib/extract/fire-0/helpers/deduplicate-objs-array-f0.ts
+@@ -1,14 +1,21 @@
+-export function deduplicateObjectsArray_F0(objArray: {
+-  [key: string]: any[];
+-}): {
+-  [key: string]: any[];
+-} {
++export function deduplicateObjectsArray_F0(
++  objArray: { [key: string]: any[] },
++  schema?: any,
++): { [key: string]: any[] } {
+   const deduplicatedObjArray: { [key: string]: any[] } = {};
+ 
+   for (const key in objArray) {
+     if (Array.isArray(objArray[key])) {
+       const seen = new Set();
+       deduplicatedObjArray[key] = objArray[key].filter(item => {
++        // Matrix rows are positional values unless the schema requires uniqueness.
++        if (
++          Array.isArray(item) &&
++          schema?.properties?.[key] &&
++          schema.properties[key].uniqueItems !== true
++        ) {
++          return true;
++        }
+         // Create a unique identifier for each item based on its properties
+         const identifier = JSON.stringify(item);
+ 
+--- a/apps/api/src/lib/extract/fire-0/helpers/merge-null-val-objs-f0.ts
++++ b/apps/api/src/lib/extract/fire-0/helpers/merge-null-val-objs-f0.ts
+@@ -111,7 +111,7 @@
+ 
+   for (const key in objArray) {
+     if (Array.isArray(objArray[key])) {
+-      // If array contains only primitive values, return as is
++      // If array contains only primitive values or nested arrays, return as is
+       if (
+         objArray[key].every(item => typeof item !== "object" || item === null || Array.isArray(item))
+       ) {
+--- a/apps/api/src/lib/extract/fire-0/helpers/mix-schema-objs-f0.ts
++++ b/apps/api/src/lib/extract/fire-0/helpers/mix-schema-objs-f0.ts
+@@ -27,10 +27,17 @@
+         schema.properties[key].type === "array" &&
+         Array.isArray(multiResult[key])
+       ) {
+-        // If the property is an array, flatten the arrays from multiResult
+-        result[key] = schema.properties[key].items?.type === "array"
+-          ? [...multiResult[key]]
+-          : multiResult[key].flat();
++        // Preserve nested array values; flatten only scalar/object chunk wrappers.
++        const items = schema.properties[key].items;
++        const allowsArrayValues = (item: any): boolean =>
++          item && typeof item === "object" &&
++          (item.type === "array" ||
++            (Array.isArray(item.type) && item.type.includes("array")) ||
++            (item.type === undefined && item.items !== undefined));
++        const nested = Array.isArray(items)
++          ? items.some(allowsArrayValues)
++          : allowsArrayValues(items);
++        result[key] = nested ? [...multiResult[key]] : multiResult[key].flat();
+       } else if (singleResult.hasOwnProperty(key)) {
+         result[key] = singleResult[key];
+       } else if (multiResult.hasOwnProperty(key)) {
+--- a/apps/api/src/lib/extract/fire-0/helpers/transform-array-to-obj-f0.ts
++++ b/apps/api/src/lib/extract/fire-0/helpers/transform-array-to-obj-f0.ts
+@@ -111,6 +111,15 @@
+     // Ensure that the currentItem[arrayKey] is an array before mapping
+     if (Array.isArray(currentItem[arrayKey])) {
+       currentItem[arrayKey].forEach((subItem: any) => {
++        if (Array.isArray(subItem)) {
++          if (
++            parentSchema.properties[arrayKey].uniqueItems !== true ||
++            !isDuplicateObject(currentLevel[arrayKey], subItem)
++          ) {
++            currentLevel[arrayKey].push(subItem);
++          }
++          return;
++        }
+         if (
+           typeof subItem === "object" &&
+           subItem !== null &&
+--- a/apps/api/src/lib/extract/helpers/deduplicate-objs-array.ts
++++ b/apps/api/src/lib/extract/helpers/deduplicate-objs-array.ts
+@@ -1,12 +1,21 @@
+-export function deduplicateObjectsArray(objArray: { [key: string]: any[] }): {
+-  [key: string]: any[];
+-} {
++export function deduplicateObjectsArray(
++  objArray: { [key: string]: any[] },
++  schema?: any,
++): { [key: string]: any[] } {
+   const deduplicatedObjArray: { [key: string]: any[] } = {};
+ 
+   for (const key in objArray) {
+     if (Array.isArray(objArray[key])) {
+       const seen = new Set();
+       deduplicatedObjArray[key] = objArray[key].filter(item => {
++        // Matrix rows are positional values unless the schema requires uniqueness.
++        if (
++          Array.isArray(item) &&
++          schema?.properties?.[key] &&
++          schema.properties[key].uniqueItems !== true
++        ) {
++          return true;
++        }
+         // Create a unique identifier for each item based on its properties
+         const identifier = JSON.stringify(item);
+ 
+--- a/apps/api/src/lib/extract/helpers/merge-null-val-objs.ts
++++ b/apps/api/src/lib/extract/helpers/merge-null-val-objs.ts
+@@ -111,7 +111,7 @@
+ 
+   for (const key in objArray) {
+     if (Array.isArray(objArray[key])) {
+-      // If array contains only primitive values, return as is
++      // If array contains only primitive values or nested arrays, return as is
+       if (
+         objArray[key].every(item => typeof item !== "object" || item === null || Array.isArray(item))
+       ) {
+--- a/apps/api/src/lib/extract/helpers/mix-schema-objs.ts
++++ b/apps/api/src/lib/extract/helpers/mix-schema-objs.ts
+@@ -27,10 +27,17 @@
+         schema.properties[key].type === "array" &&
+         Array.isArray(multiResult[key])
+       ) {
+-        // If the property is an array, flatten the arrays from multiResult
+-        result[key] = schema.properties[key].items?.type === "array"
+-          ? [...multiResult[key]]
+-          : multiResult[key].flat();
++        // Preserve nested array values; flatten only scalar/object chunk wrappers.
++        const items = schema.properties[key].items;
++        const allowsArrayValues = (item: any): boolean =>
++          item && typeof item === "object" &&
++          (item.type === "array" ||
++            (Array.isArray(item.type) && item.type.includes("array")) ||
++            (item.type === undefined && item.items !== undefined));
++        const nested = Array.isArray(items)
++          ? items.some(allowsArrayValues)
++          : allowsArrayValues(items);
++        result[key] = nested ? [...multiResult[key]] : multiResult[key].flat();
+       } else if (singleResult.hasOwnProperty(key)) {
+         result[key] = singleResult[key];
+       } else if (multiResult.hasOwnProperty(key)) {
+--- a/apps/api/src/lib/extract/helpers/transform-array-to-obj.ts
++++ b/apps/api/src/lib/extract/helpers/transform-array-to-obj.ts
+@@ -126,6 +126,15 @@
+       Array.isArray(currentItem[arrayKey])
+     ) {
+       currentItem[arrayKey].forEach((subItem: any) => {
++        if (Array.isArray(subItem)) {
++          if (
++            parentSchema.properties[arrayKey].uniqueItems !== true ||
++            !isDuplicateObject(currentLevel[arrayKey], subItem)
++          ) {
++            currentLevel[arrayKey].push(subItem);
++          }
++          return;
++        }
+         if (
+           typeof subItem === "object" &&
+           subItem !== null &&
