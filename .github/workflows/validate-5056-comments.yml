@@ -1,0 +1,115 @@
+name: Validate Firecrawl polling review repair
+on:
+  push:
+    branches: [validation/firecrawl5056-comments-20261011]
+    paths: [.github/workflows/validate-5056-comments.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: rudycelekli/firecrawl
+          ref: 690df3d2bb8e96b9d8c43698bdcc325be88db213
+          path: candidate
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: firecrawl/firecrawl
+          ref: 08edc4913660acf0c3d5b39fd748373430ade04e
+          path: original
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version: '1.23'
+          cache: false
+      - name: Native original cancellation regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C candidate rev-parse HEAD)" = 690df3d2bb8e96b9d8c43698bdcc325be88db213
+          test "$(git -C original rev-parse HEAD)" = 08edc4913660acf0c3d5b39fd748373430ade04e
+          mkdir -p "$RUNNER_TEMP/proof"
+          { git -C candidate rev-parse HEAD; go version; uname -a; } > "$RUNNER_TEMP/proof/runtime.txt"
+          cp candidate/apps/go-sdk/poll_deadline_test.go original/apps/go-sdk/poll_deadline_test.go
+          cd original/apps/go-sdk
+          set +e
+          go test ./... -run '^TestExpiredPollingContextKeepsCallerCancellation$' -count=1 > "$RUNNER_TEMP/proof/original-regression.log" 2>&1
+          result=$?
+          set -e
+          cat "$RUNNER_TEMP/proof/original-regression.log"
+          test "$result" -ne 0
+          test "$(grep -c 'caller cancellation became SDK timeout' "$RUNNER_TEMP/proof/original-regression.log")" -eq 2
+      - name: Native build vet format and complete race suite
+        working-directory: candidate/apps/go-sdk
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -z "$(gofmt -l .)"
+          go build ./... 2>&1 | tee "$RUNNER_TEMP/proof/build.log"
+          go vet ./... 2>&1 | tee "$RUNNER_TEMP/proof/vet.log"
+          go test ./... -race -count=1 2>&1 | tee "$RUNNER_TEMP/proof/full-race.log"
+      - name: Verify delayed pagination assertions detect lost polling context
+        working-directory: candidate/apps/go-sdk
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('firecrawl.go');s=p.read_text()
+          for name in ['paginateCrawl','paginateBatchScrape']:
+              old='c.'+name+'(ctx, job)';assert s.count(old)==1;s=s.replace(old,'c.'+name+'(parentContext, job)')
+          p.write_text(s)
+          PY
+          set +e
+          go test ./... -run '^TestPollingDeadlineDuringCompletedPagination/(crawl|batch)/sdk-timeout$' -count=1 > "$RUNNER_TEMP/proof/pagination-mutant.log" 2>&1
+          result=$?
+          set -e
+          cat "$RUNNER_TEMP/proof/pagination-mutant.log"
+          test "$result" -ne 0
+          test "$(grep -c 'pagination exceeded bounded elapsed time' "$RUNNER_TEMP/proof/pagination-mutant.log")" -eq 2
+          git restore firecrawl.go
+          test -z "$(git status --porcelain)"
+      - uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808
+        if: always()
+        with:
+          name: polling-5056-go-proof
+          path: ${{ runner.temp }}/proof/
+          if-no-files-found: error
+          retention-days: 7
+  python:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: rudycelekli/firecrawl
+          ref: 690df3d2bb8e96b9d8c43698bdcc325be88db213
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+      - name: Native complete Python package suite
+        working-directory: apps/python-sdk
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = 690df3d2bb8e96b9d8c43698bdcc325be88db213
+          mkdir -p "$RUNNER_TEMP/proof"
+          { git rev-parse HEAD; python --version; uname -a; } > "$RUNNER_TEMP/proof/runtime.txt"
+          python -m pip install -r requirements.txt
+          python -m pip install --no-deps -e .
+          python -m pip freeze > "$RUNNER_TEMP/proof/dependencies.txt"
+          PYTHONPATH="$PWD" python -m pytest firecrawl/__tests__/unit -q 2>&1 | tee "$RUNNER_TEMP/proof/tests.log"
+          test -z "$(git status --porcelain)"
+      - uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808
+        if: always()
+        with:
+          name: polling-5056-python-proof
+          path: ${{ runner.temp }}/proof/
+          if-no-files-found: error
+          retention-days: 7
