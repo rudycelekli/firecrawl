@@ -40,10 +40,11 @@ jobs:
       - name: Guard reviewed candidate and record environment
         run: |
           test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          initial_status="$(git status --porcelain)"
+          test -z "$initial_status"
           mkdir -p proof
           git rev-parse HEAD > proof/head.txt
-          git status --porcelain > proof/initial-status.txt
-          test ! -s proof/initial-status.txt
+          printf '%s' "$initial_status" > proof/initial-status.txt
       - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7
         with:
           components: clippy,rustfmt
