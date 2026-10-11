@@ -1,5 +1,7 @@
 name: Validate reviewed Firecrawl Rust SDK comments
 on:
+  push:
+    branches: ['validation/firecrawl-rust-comments-20261011']
   workflow_dispatch:
     inputs:
       head5063:
@@ -24,7 +26,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      EXPECTED_HEAD: ${{ matrix.pr == '5063' && inputs.head5063 || inputs.head5065 }}
+      EXPECTED_HEAD: ${{ matrix.pr == '5063' && (inputs.head5063 || 'f326b1945f73ab3d7c041c85140a0fa9ffcb07a6') || (inputs.head5065 || '4d41b65d1300d637278b91c3f13a94aa5f77450b') }}
       PR_NUMBER: ${{ matrix.pr }}
     steps:
       - name: Validate exact head input
