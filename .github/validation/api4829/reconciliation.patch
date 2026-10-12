@@ -1,0 +1,558 @@
+diff --git a/apps/api/src/controllers/v2/__tests__/scrape-browser.test.ts b/apps/api/src/controllers/v2/__tests__/scrape-browser.test.ts
+index 401485b..553ac59 100644
+--- a/apps/api/src/controllers/v2/__tests__/scrape-browser.test.ts
++++ b/apps/api/src/controllers/v2/__tests__/scrape-browser.test.ts
+@@ -3,6 +3,9 @@ import { readScrapeJobState } from "../../../lib/job-state-store";
+ import { vi } from "vitest";
+ import { config } from "../../../config";
+ import {
++  abandonBrowserSession,
++  getBrowserSessionFromScrape,
++  updateBrowserSessionScrapeId,
+   insertBrowserSession,
+   getBrowserSession,
+   listUnsettledHangarSessions,
+@@ -62,6 +65,11 @@ vi.mock("ai", async importOriginal => ({
+   generateText: vi.fn(async () => ({ text: "done" })),
+ }));
+ 
++const lockState = vi.hoisted(() => ({
++  chains: new Map<string, Promise<void>>(),
++  controllers: new Map<string, AbortController>(),
++}));
++
+ vi.mock("uuid", () => ({
+   v7: vi.fn(() => "session-123"),
+ }));
+@@ -70,6 +78,7 @@ vi.mock("../../../config", () => ({
+   config: {
+     USE_DB_AUTHENTICATION: true,
+     HANGAR_URL: "http://localhost:9000",
++    REDIS_RATE_LIMIT_URL: process.env.REDIS_RATE_LIMIT_URL,
+   },
+ }));
+ vi.mock("../../../lib/logger", () => ({
+@@ -123,6 +132,7 @@ vi.mock("../../../lib/browser-sessions", () => ({
+   settleBrowserSessionOnce: vi.fn(),
+   withLockedBrowserSession: vi.fn(),
+   getBrowserSessionFromScrape: vi.fn(),
++  abandonBrowserSession: vi.fn(),
+   markBrowserSessionUsedPrompt: vi.fn(() => Promise.resolve()),
+   didBrowserSessionUsePrompt: vi.fn(),
+ }));
+@@ -187,6 +197,9 @@ describe("scrapeInteractController", () => {
+ 
+   beforeEach(() => {
+     vi.clearAllMocks();
++    lockState.chains.clear();
++    lockState.controllers.clear();
++    vi.mocked(getBrowserSessionFromScrape).mockResolvedValue(null);
+     vi.mocked(getBrowserSession).mockResolvedValue(null);
+   });
+ 
+@@ -241,6 +254,156 @@ describe("scrapeInteractController", () => {
+       vi.mocked(executeHangarBrowser).mockResolvedValue(output);
+     });
+ 
++    describe("locked scrape initialization", () => {
++      let stored: any;
++      const request = () => ({
++        params: { jobId: "scrape-123" },
++        body: { code: "console.log('private')" }, headers: {},
++        auth: { team_id: "team-123" }, acuc: { flags: { scrapeZDR: "allowed" } },
++      }) as any;
++      const expire = () => lockState.controllers.get("browser:scrape:scrape-123:create")!
++        .abort(new Error("creation lease lost"));
++      beforeEach(() => {
++        stored = null;
++        vi.mocked(readScrapeJobState).mockResolvedValue({
++          status: "completed", zeroDataRetention: true,
++          replay: { targetUrl: "https://private.example", waitForMs: 0, actions: [] },
++        } as any);
++        vi.mocked(getBrowserSessionFromScrape).mockImplementation(async scrapeId => {
++          expect(isZeroDataRetentionActive()).toBe(true);
++          return stored?.scrape_id === scrapeId ? stored : null;
++        });
++        vi.mocked(insertBrowserSession).mockImplementation(async row => {
++          expect(row.scrape_id).toBeNull();
++          expect(row.zero_data_retention).toBe(true);
++          expect(isZeroDataRetentionActive()).toBe(true);
++          stored = row;
++          return row as any;
++        });
++        vi.mocked(updateBrowserSessionScrapeId).mockImplementation(async (id, scrapeId) => {
++          expect(isZeroDataRetentionActive()).toBe(true);
++          expect(id).toBe(stored.id);
++          stored = { ...stored, scrape_id: scrapeId };
++        });
++        vi.mocked(abandonBrowserSession).mockImplementation(async id => {
++          expect(isZeroDataRetentionActive()).toBe(true);
++          expect(id).toBe(stored.id);
++          stored = { ...stored, should_bill: false, scrape_id: null };
++          return stored;
++        });
++        vi.mocked(executeCodeViaBrowserSession).mockImplementation(async () => {
++          expect(isZeroDataRetentionActive()).toBe(true);
++          return output;
++        });
++        vi.mocked(stopHangarBrowser).mockResolvedValue({ status: "stopped", created_at: 100, ended_at: 100 } as any);
++      });
++      afterEach(() => {
++        vi.mocked(readScrapeJobState).mockResolvedValue(null);
++        vi.mocked(getBrowserSessionFromScrape).mockResolvedValue(null);
++        vi.mocked(updateBrowserSessionScrapeId).mockResolvedValue(undefined);
++        vi.mocked(insertBrowserSession).mockImplementation(async row => row as any);
++        vi.mocked(executeCodeViaBrowserSession).mockReset();
++        vi.mocked(stopHangarBrowser).mockReset();
++      });
++      it("publishes only one initialized private browser for concurrent first interactions", async () => {
++        const responses = [buildRes(), buildRes()];
++        await Promise.all(responses.map(res => scrapeInteractController(request(), res)));
++        expect(createHangarBrowser).toHaveBeenCalledTimes(1);
++        expect(insertBrowserSession).toHaveBeenCalledTimes(1);
++        expect(updateBrowserSessionScrapeId).toHaveBeenCalledTimes(1);
++        expect(redlock.using).toHaveBeenCalledTimes(2);
++        expect(executeCodeViaBrowserSession).toHaveBeenCalledTimes(2);
++        for (const res of responses) expect(res.status).toHaveBeenCalledWith(200);
++        expect(stored.scrape_id).toBe("scrape-123");
++      });
++      it("serializes concurrent creation through the actual harness Redis lease", async () => {
++        expect(process.env.REDIS_RATE_LIMIT_URL).toBeTruthy();
++        const actual = await vi.importActual<typeof import("../../../services/redlock")>("../../../services/redlock");
++        try {
++          vi.mocked(redlock.using).mockImplementationOnce(actual.redlock.using.bind(actual.redlock));
++          vi.mocked(redlock.using).mockImplementationOnce(actual.redlock.using.bind(actual.redlock));
++          const responses = [buildRes(), buildRes()];
++          await Promise.all(responses.map(res => scrapeInteractController(request(), res)));
++          expect(createHangarBrowser).toHaveBeenCalledTimes(1);
++          expect(updateBrowserSessionScrapeId).toHaveBeenCalledTimes(1);
++          expect(executeCodeViaBrowserSession).toHaveBeenCalledTimes(2);
++          for (const res of responses) expect(res.status).toHaveBeenCalledWith(200);
++        } finally {
++          await Promise.all([...actual.redlock.clients].map(client => client.quit()));
++        }
++      });
++      it.each(["lookup", "link", "healthy"] as const)("checks the adopted private browser lease during %s", async phase => {
++        const existing = { ...session, should_bill: true, scrape_id: null };
++        const req = request(); req.body.existingSessionId = existing.id;
++        vi.mocked(getBrowserSession).mockImplementationOnce(async () => {
++          expect(isZeroDataRetentionActive()).toBe(true);
++          if (phase === "lookup") expire();
++          return existing;
++        });
++        vi.mocked(updateBrowserSessionScrapeId).mockImplementationOnce(async () => {
++          expect(isZeroDataRetentionActive()).toBe(true);
++          if (phase === "link") expire();
++        });
++        const res = buildRes(); await scrapeInteractController(req, res);
++        expect(res.status).toHaveBeenCalledWith(phase === "healthy" ? 200 : 503);
++        expect(executeCodeViaBrowserSession).toHaveBeenCalledTimes(phase === "healthy" ? 1 : 0);
++        expect(updateBrowserSessionScrapeId).toHaveBeenCalledTimes(phase === "lookup" ? 0 : 1);
++        expect(createHangarBrowser).not.toHaveBeenCalled();
++        expect(abandonBrowserSession).not.toHaveBeenCalled();
++        expect(stopHangarBrowser).not.toHaveBeenCalled();
++      });
++      it.each(["lease", "link", "link-lease"] as const)("abandons an unexposed private browser after %s failure", async phase => {
++        if (phase === "lease") vi.mocked(executeHangarBrowser).mockImplementationOnce(async () => { expire(); return output; });
++        else if (phase === "link") vi.mocked(updateBrowserSessionScrapeId).mockRejectedValueOnce(new Error("link failed"));
++        else vi.mocked(updateBrowserSessionScrapeId).mockImplementationOnce(async (_id, scrapeId) => {
++          stored = { ...stored, scrape_id: scrapeId }; expire();
++        });
++        const res = buildRes(); await scrapeInteractController(request(), res);
++        expect(res.status).toHaveBeenCalledWith(503);
++        expect(abandonBrowserSession).toHaveBeenCalledWith(stored.id);
++        expect(stored).toMatchObject({ scrape_id: null, should_bill: false, zero_data_retention: true });
++        expect(executeCodeViaBrowserSession).not.toHaveBeenCalled();
++        expect(stopHangarBrowser).toHaveBeenCalled();
++      });
++      it("fails without creating a browser when the shared creation lease is unavailable", async () => {
++        vi.mocked(redlock.using).mockRejectedValueOnce(new Error("lease unavailable"));
++        const res = buildRes(); await scrapeInteractController(request(), res);
++        expect(res.status).toHaveBeenCalledWith(503);
++        expect(createHangarBrowser).not.toHaveBeenCalled();
++        expect(insertBrowserSession).not.toHaveBeenCalled();
++        expect(executeCodeViaBrowserSession).not.toHaveBeenCalled();
++      });
++      it("uses independent leases for different scrape jobs", async () => {
++        const rows = new Map<string, any>();
++        const uuid = await vi.importMock<typeof import("uuid")>("uuid");
++        vi.mocked(uuid.v7).mockReturnValueOnce("session-one").mockReturnValueOnce("session-two");
++        vi.mocked(getBrowserSessionFromScrape).mockImplementation(async scrapeId =>
++          [...rows.values()].find(row => row.scrape_id === scrapeId) ?? null);
++        vi.mocked(insertBrowserSession).mockImplementation(async row => { rows.set(row.id, row); return row as any; });
++        vi.mocked(updateBrowserSessionScrapeId).mockImplementation(async (id, scrapeId) => {
++          rows.set(id, { ...rows.get(id), scrape_id: scrapeId });
++        });
++        const requests = [request(), request()]; requests[1].params.jobId = "scrape-other";
++        const responses = [buildRes(), buildRes()];
++        await Promise.all(requests.map((req, index) => scrapeInteractController(req, responses[index])));
++        expect(vi.mocked(redlock.using).mock.calls.map(([keys]) => keys)).toEqual([
++          ["browser:scrape:scrape-123:create"], ["browser:scrape:scrape-other:create"],
++        ]);
++        expect(createHangarBrowser).toHaveBeenCalledTimes(2);
++        for (const res of responses) expect(res.status).toHaveBeenCalledWith(200);
++        expect([...rows.values()].map(row => row.scrape_id).sort()).toEqual(["scrape-123", "scrape-other"]);
++      });
++      it("preserves the privacy rejection when adopting a retained browser for a private scrape", async () => {
++        vi.mocked(getBrowserSession).mockResolvedValueOnce({ ...session, zero_data_retention: false });
++        const req = request(); req.body.existingSessionId = session.id;
++        const res = buildRes(); await scrapeInteractController(req, res);
++        expect(res.status).toHaveBeenCalledWith(409);
++        expect(updateBrowserSessionScrapeId).not.toHaveBeenCalled();
++        expect(executeCodeViaBrowserSession).not.toHaveBeenCalled();
++        expect(abandonBrowserSession).not.toHaveBeenCalled();
++      });
++    });
++
+     it.each(["allowed", "forced"] as const)(
+       "persists ZDR and redacts request logging when the team policy is %s",
+       async mode => {
+@@ -719,4 +882,24 @@ describe("scrapeInteractController", () => {
+   });
+ });
+ 
+-vi.mock("../../../services/redlock", () => ({ redlock: { using: vi.fn() } }));
++// A controllable lease double protects controller state boundaries; native
++// Redis acquisition itself remains the harness's responsibility.
++vi.mock("../../../services/redlock", () => ({
++  redlock: { using: vi.fn(async (keys: string[], _ttl: number, ...args: any[]) => {
++    const key = [...keys].sort().join("|");
++    const previous = lockState.chains.get(key) ?? Promise.resolve();
++    let release!: () => void;
++    const held = new Promise<void>(resolve => { release = resolve; });
++    lockState.chains.set(key, held);
++    await previous;
++    const controller = new AbortController();
++    Object.defineProperty(controller.signal, "error", { get: () => controller.signal.reason });
++    lockState.controllers.set(key, controller);
++    try { return await args.at(-1)(controller.signal); }
++    finally {
++      release();
++      if (lockState.chains.get(key) === held) lockState.chains.delete(key);
++      if (lockState.controllers.get(key) === controller) lockState.controllers.delete(key);
++    }
++  }) },
++}));
+diff --git a/apps/api/src/controllers/v2/scrape-browser.ts b/apps/api/src/controllers/v2/scrape-browser.ts
+index aa7e1e3..0dc3069 100644
+--- a/apps/api/src/controllers/v2/scrape-browser.ts
++++ b/apps/api/src/controllers/v2/scrape-browser.ts
+@@ -3,6 +3,7 @@ import { z } from "zod";
+ import { logger as _logger } from "../../lib/logger";
+ import { config } from "../../config";
+ import {
++  abandonBrowserSession,
+   getBrowserSession,
+   getBrowserSessionFromScrape,
+   updateBrowserSessionActivity,
+@@ -57,6 +58,7 @@ import {
+   browserOptionsFromScrape,
+ } from "../../lib/browser-options";
+ import { scrapeQueue } from "../../services/worker/nuq-router";
++import { redlock } from "../../services/redlock";
+ 
+ const browserExecuteRequestSchema = z
+   .object({
+@@ -236,71 +238,115 @@ async function scrapeInteractInternal(
+ 
+   let session = storedSession;
+ 
+-  if (!session && req.body.existingSessionId) {
+-    const existing = await withZeroDataRetention(true, () =>
+-      getBrowserSession(req.body.existingSessionId!),
+-    );
+-    if (
+-      existing &&
+-      existing.team_id === req.auth.team_id &&
+-      existing.status === "active"
+-    ) {
+-      zeroDataRetention = getBrowserZDR(req, existing, zeroDataRetention);
+-      logger = logger.child({ zeroDataRetention });
+-      await withZeroDataRetention(zeroDataRetention, () =>
+-        updateBrowserSessionScrapeId(existing.id, scrapeId),
+-      );
+-      session = { ...existing, scrape_id: scrapeId };
+-      logger.info("Adopted pre-created browser session for scrape", {
+-        scrapeId,
+-        sessionId: session.id,
+-        browserId: session.browser_id,
+-      });
+-    }
+-  }
+-
+   if (!session) {
+-    if (!replayContext) {
+-      return res.status(409).json({
+-        success: false,
+-        error:
+-          replayError ??
+-          "Replay context is unavailable. Supply url or an existingSessionId to continue without retained scrape context.",
++    let creationFailure:
++      | Awaited<ReturnType<typeof createSessionForScrape>>
++      | undefined;
++    try {
++      // The fast lookup can miss in concurrent requests. Recheck under the
++      // shared lease before adopting or creating a billable session.
++      await redlock.using(
++        [`browser:scrape:${scrapeId}:create`],
++        60_000,
++        { retryCount: 200 },
++        async signal => {
++          session = await withZeroDataRetention(true, () =>
++            getBrowserSessionFromScrape(scrapeId),
++          );
++          if (session) return;
++          if (req.body.existingSessionId) {
++            const existing = await withZeroDataRetention(true, () =>
++              getBrowserSession(req.body.existingSessionId!),
++            );
++            if (
++              existing && existing.team_id === req.auth.team_id &&
++              existing.status === "active"
++            ) {
++              zeroDataRetention = getBrowserZDR(req, existing, zeroDataRetention);
++              logger = logger.child({ zeroDataRetention });
++              if (signal.aborted) throw signal.error;
++              await withZeroDataRetention(zeroDataRetention, () =>
++                updateBrowserSessionScrapeId(existing.id, scrapeId),
++              );
++              if (signal.aborted) throw signal.error;
++              session = { ...existing, scrape_id: scrapeId };
++              logger.info("Adopted pre-created browser session for scrape", {
++                scrapeId, sessionId: session.id, browserId: session.browser_id,
++              });
++            }
++          }
++          if (session) return;
++          if (signal.aborted) throw signal.error;
++          if (!replayContext) {
++            creationFailure = {
++              error: true, status: 409,
++              body: { success: false, error: replayError ??
++                "Replay context is unavailable. Supply url or an existingSessionId to continue without retained scrape context." },
++            };
++            return;
++          }
++          const browserOptions = state?.browser ?? browserOptionsFromScrape(
++            nuqJob?.data.mode === "single_urls"
++              ? nuqJob.data.scrapeOptions : { profile: state?.profile },
++          );
++          const created = await withZeroDataRetention(zeroDataRetention, () =>
++            createSessionForScrape(req, scrapeId, replayContext!, logger, browserOptions, zeroDataRetention),
++          );
++          if (created.error === true) {
++            creationFailure = created;
++            return;
++          }
++          const abandonCreatedSession = () => withZeroDataRetention(
++            created.session.zero_data_retention === true,
++            async () => {
++              // Disable billing and unlink before cleanup; a failed stop can
++              // then be reconciled without charging for an unusable session.
++              const abandoned = await abandonBrowserSession(created.session.id);
++              await stopBrowserSession(abandoned).catch(error =>
++                logger.error("Failed to stop abandoned scrape browser", {
++                  scrapeId, sessionId: created.session.id, error,
++                }),
++              );
++            },
++          );
++          if (signal.aborted) {
++            await abandonCreatedSession();
++            throw signal.error;
++          }
++          try {
++            await withZeroDataRetention(zeroDataRetention, () =>
++              updateBrowserSessionScrapeId(created.session.id, scrapeId),
++            );
++          } catch (error) {
++            await abandonCreatedSession();
++            throw error;
++          }
++          if (signal.aborted) {
++            await abandonCreatedSession();
++            throw signal.error;
++          }
++          session = { ...created.session, scrape_id: scrapeId };
++          logger = logger.child({ sessionId: session.id, browserId: session.browser_id });
++          logger.info("Browser session created for scrape", {
++            scrapeId, sessionId: session.id, browserId: session.browser_id,
++          });
++        },
++      );
++    } catch (error) {
++      // Preserve current privacy/entitlement errors instead of hiding them as
++      // lock availability errors.
++      if (error instanceof BrowserSessionError || error instanceof HangarError) throw error;
++      logger.error("Failed to acquire scrape browser session lock", { scrapeId, error });
++      return res.status(503).json({
++        success: false, error: "Browser session is unavailable. Please retry the interaction.",
+       });
+     }
+-    const browserOptions =
+-      state?.browser ??
+-      browserOptionsFromScrape(
+-        nuqJob?.data.mode === "single_urls"
+-          ? nuqJob.data.scrapeOptions
+-          : { profile: state?.profile },
+-      );
+-    const created = await createSessionForScrape(
+-      req,
+-      scrapeId,
+-      replayContext,
+-      logger,
+-      browserOptions,
+-      zeroDataRetention,
+-    );
+-    if (created.error === true) {
+-      // A keyless limit body carries the caller's own link, so match on it
+-      // rather than on the message text.
+-      if (created.status === 429 && "signup_url" in created.body) {
+-        applyAgentAuthDiscoveryHeader(res);
+-      }
+-      return res.status(created.status).json(created.body);
++    if (creationFailure?.error === true) {
++      if (creationFailure.status === 429 && "signup_url" in creationFailure.body) applyAgentAuthDiscoveryHeader(res);
++      return res.status(creationFailure.status).json(creationFailure.body);
+     }
+-    session = created.session;
+-
+-    logger = logger.child({
+-      sessionId: session.id,
+-      browserId: session.browser_id,
+-    });
+-    logger.info("Browser session created for scrape", {
+-      scrapeId,
+-      sessionId: session.id,
+-      browserId: session.browser_id,
++    if (!session) return res.status(503).json({
++      success: false, error: "Browser session is unavailable. Please retry the interaction.",
+     });
+   }
+ 
+@@ -484,6 +530,7 @@ async function createSessionForScrape(
+       ...browserCreateRequestSchema.parse({}),
+       ...browserOptions,
+       scrapeId,
++      deferScrapeLink: true,
+       zeroDataRetention,
+       initialize: async browserId => {
+         const replay = await executeHangarBrowser(browserId, {
+diff --git a/apps/api/src/lib/browser-lifecycle.ts b/apps/api/src/lib/browser-lifecycle.ts
+index f4d9a61..6e4115c 100644
+--- a/apps/api/src/lib/browser-lifecycle.ts
++++ b/apps/api/src/lib/browser-lifecycle.ts
+@@ -125,6 +125,8 @@ export async function createBrowserSession(
+     recordSession: boolean;
+     zeroDataRetention?: boolean;
+     scrapeId?: string;
++    /** Keep a new session private until the caller has validated its lock. */
++    deferScrapeLink?: boolean;
+     shouldBill?: boolean;
+     requestId?: string;
+     initialize?: (browserId: string) => Promise<void>;
+@@ -234,7 +236,7 @@ async function createBrowserSessionInternal(
+       request_id: options.requestId ?? id,
+       zero_data_retention: zeroDataRetention,
+       should_bill: shouldBill,
+-      scrape_id: options.scrapeId,
++      scrape_id: options.deferScrapeLink ? null : options.scrapeId,
+       browser_id: browser.id,
+       workspace_id: "",
+       context_id: zeroDataRetention ? "" : (browser.playlist_url ?? ""),
+diff --git a/apps/api/src/lib/browser-sessions.ts b/apps/api/src/lib/browser-sessions.ts
+index 96424b3..d8c832c 100644
+--- a/apps/api/src/lib/browser-sessions.ts
++++ b/apps/api/src/lib/browser-sessions.ts
+@@ -213,6 +213,25 @@ export async function updateBrowserSessionScrapeId(
+     .where(eq(schema.browser_sessions.id, id));
+ }
+ 
++/** Make an unserved session unavailable and non-billable before stopping it. */
++export async function abandonBrowserSession(
++  id: string,
++): Promise<BrowserSessionRow> {
++  return withLockedBrowserSession(id, async (row, tx) => {
++    if (row.status !== "active" || row.credits_used !== null)
++      throw new Error("Browser session is already settled.");
++    await tx
++      .update(schema.browser_sessions)
++      .set({
++        should_bill: false,
++        scrape_id: null,
++        updated_at: new Date().toISOString(),
++      })
++      .where(eq(schema.browser_sessions.id, id));
++    return { ...row, should_bill: false, scrape_id: null };
++  });
++}
++
+ // Records a successful save of a persistent profile. Throws on failure so the
+ // Hangar reconciliation retries the update.
+ export async function upsertBrowserProfile(input: {
+diff --git a/apps/api/src/lib/browser-sessions.test.ts b/apps/api/src/lib/browser-sessions.test.ts
+new file mode 100644
+index 0000000..a8a3a9f
+--- /dev/null
++++ b/apps/api/src/lib/browser-sessions.test.ts
+@@ -0,0 +1,60 @@
++import { PgDialect } from "drizzle-orm/pg-core";
++import { abandonBrowserSession, settleBrowserSessionOnce } from "./browser-sessions";
++
++// Exercise the actual helpers and Drizzle predicates through a controlled
++// transaction boundary. This is not a live PostgreSQL row-lock claim.
++const fixture = vi.hoisted(() => ({
++  row: null as any,
++  updates: [] as any[],
++  predicates: [] as any[],
++  lockModes: [] as string[],
++  failWrite: false,
++}));
++vi.mock("../db/connection", () => {
++  const tx = {
++    select: () => ({ from: () => ({ where: (predicate: any) => ({
++      for: async (mode: string) => {
++        fixture.predicates.push(predicate); fixture.lockModes.push(mode);
++        return fixture.row ? [{ ...fixture.row }] : [];
++      },
++    }) }) }),
++    update: () => ({ set: (values: any) => ({ where: async (predicate: any) => {
++      fixture.predicates.push(predicate);
++      if (fixture.failWrite) throw new Error("transaction write failed");
++      fixture.updates.push(values); fixture.row = { ...fixture.row, ...values };
++    } }) }),
++  };
++  const db = { transaction: async (run: any) => run(tx) };
++  return { db, dbRr: db, dbIndex: db, getDbPoolMetrics: () => "" };
++});
++
++describe("abandonBrowserSession transaction boundary", () => {
++  beforeEach(() => {
++    fixture.row = { id: "unexposed-session", status: "active", credits_used: null,
++      should_bill: true, scrape_id: "scrape-123", zero_data_retention: true };
++    fixture.updates = []; fixture.predicates = []; fixture.lockModes = []; fixture.failWrite = false;
++  });
++  it("unlinks and disables billing before subsequent settlement without changing privacy", async () => {
++    const abandoned = await abandonBrowserSession(fixture.row.id);
++    expect(abandoned).toMatchObject({ should_bill: false, scrape_id: null, zero_data_retention: true });
++    expect(fixture.row).toMatchObject(abandoned);
++    expect(fixture.updates).toEqual([expect.objectContaining({ should_bill: false, scrape_id: null })]);
++    expect(fixture.lockModes).toEqual(["update"]);
++    const dialect = new PgDialect();
++    for (const predicate of fixture.predicates) expect(dialect.sqlToQuery(predicate).params).toEqual(["unexposed-session"]);
++    const bill = vi.fn(async row => row.should_bill ? 10 : 0);
++    expect(await settleBrowserSessionOnce(abandoned.id, bill)).toEqual({ creditsBilled: 0, newlySettled: true });
++    expect(bill).toHaveBeenCalledWith(expect.objectContaining({ should_bill: false, scrape_id: null }));
++    expect(fixture.row.credits_used).toBe(0);
++  });
++  it.each([{ status: "destroyed" }, { credits_used: 0 }])("rejects already settled rows without a write: %j", async state => {
++    Object.assign(fixture.row, state);
++    await expect(abandonBrowserSession(fixture.row.id)).rejects.toThrow("already settled");
++    expect(fixture.updates).toEqual([]);
++  });
++  it("does not return a falsely abandoned row when the transaction write fails", async () => {
++    fixture.failWrite = true;
++    await expect(abandonBrowserSession(fixture.row.id)).rejects.toThrow("transaction write failed");
++    expect(fixture.row).toMatchObject({ should_bill: true, scrape_id: "scrape-123" });
++  });
++});
