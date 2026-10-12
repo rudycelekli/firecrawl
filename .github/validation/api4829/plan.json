@@ -1,7 +1,7 @@
 {
   "comparison_base": "c22afa500aea53b8c0f3ff667a8debf3443bd3ee",
   "original_pr_head": "0357d1c0f61aa955bdc13de5f884167a244ff868",
-  "patch_sha256": "91f99aaa6d6df564b7d83b610f1a13f53577fe6d7728c488ec4a5e4c53a7fdf2",
+  "patch_sha256": "6b6a0a5e1f614c3330d913431fd5c374fb4a7e70eb3882a148e302aaba47e6c8",
   "native_tree": "ec5e6efbd9d499006f7e2fdc289d122add01df16",
   "allowed_files": [
     "apps/api/src/controllers/v2/__tests__/scrape-browser.test.ts",

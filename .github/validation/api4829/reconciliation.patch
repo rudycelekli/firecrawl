@@ -1,5 +1,5 @@
 diff --git a/apps/api/src/controllers/v2/__tests__/scrape-browser.test.ts b/apps/api/src/controllers/v2/__tests__/scrape-browser.test.ts
-index 401485b..553ac59 100644
+index 401485b..e41ad93 100644
 --- a/apps/api/src/controllers/v2/__tests__/scrape-browser.test.ts
 +++ b/apps/api/src/controllers/v2/__tests__/scrape-browser.test.ts
 @@ -3,6 +3,9 @@ import { readScrapeJobState } from "../../../lib/job-state-store";
@@ -176,7 +176,7 @@ index 401485b..553ac59 100644
 +      it("uses independent leases for different scrape jobs", async () => {
 +        const rows = new Map<string, any>();
 +        const uuid = await vi.importMock<typeof import("uuid")>("uuid");
-+        vi.mocked(uuid.v7).mockReturnValueOnce("session-one").mockReturnValueOnce("session-two");
++        vi.mocked(uuid.v7 as () => string).mockReturnValueOnce("session-one").mockReturnValueOnce("session-two");
 +        vi.mocked(getBrowserSessionFromScrape).mockImplementation(async scrapeId =>
 +          [...rows.values()].find(row => row.scrape_id === scrapeId) ?? null);
 +        vi.mocked(insertBrowserSession).mockImplementation(async row => { rows.set(row.id, row); return row as any; });
@@ -234,7 +234,7 @@ index 401485b..553ac59 100644
 +  }) },
 +}));
 diff --git a/apps/api/src/controllers/v2/scrape-browser.ts b/apps/api/src/controllers/v2/scrape-browser.ts
-index aa7e1e3..0dc3069 100644
+index aa7e1e3..981b023 100644
 --- a/apps/api/src/controllers/v2/scrape-browser.ts
 +++ b/apps/api/src/controllers/v2/scrape-browser.ts
 @@ -3,6 +3,7 @@ import { z } from "zod";
@@ -430,7 +430,83 @@ index aa7e1e3..0dc3069 100644
      });
    }
  
-@@ -484,6 +530,7 @@ async function createSessionForScrape(
+@@ -315,8 +361,9 @@ async function scrapeInteractInternal(
+ 
+   zeroDataRetention = getBrowserZDR(req, session, zeroDataRetention);
+   logger = logger.child({ zeroDataRetention });
++  const executionSession = session;
+   return withZeroDataRetention(zeroDataRetention, async () => {
+-    updateBrowserSessionActivity(session.id).catch(() => {});
++    updateBrowserSessionActivity(executionSession.id).catch(() => {});
+     // --- Execute: prompt-based agent loop OR direct code ---
+     //
+     // The persisted session policy applies to every execution, including calls
+@@ -348,7 +395,7 @@ async function scrapeInteractInternal(
+       logger.info("Starting agent loop from prompt", { prompt, timeout });
+ 
+       try {
+-        await reserveBrowserPromptCredits(req, session);
++        await reserveBrowserPromptCredits(req, executionSession);
+       } catch (error) {
+         return browserError(res, error, req);
+       }
+@@ -356,11 +403,11 @@ async function scrapeInteractInternal(
+       try {
+         execResult = await executePromptViaBrowserAgent(
+           prompt,
+-          session.browser_id,
++          executionSession.browser_id,
+           timeout,
+           logger,
+           {
+-            sessionId: session.id,
++            sessionId: executionSession.id,
+             scrapeId,
+             teamId: req.auth.team_id,
+             ...traceIdentity,
+@@ -378,7 +425,7 @@ async function scrapeInteractInternal(
+ 
+       enqueueBrowserSessionActivity({
+         team_id: req.auth.team_id,
+-        session_id: session.id,
++        session_id: executionSession.id,
+         source: "interact",
+         language: "bash",
+         timeout,
+@@ -390,10 +437,10 @@ async function scrapeInteractInternal(
+ 
+       try {
+         execResult = await executeCodeViaBrowserSession(
+-          session.browser_id,
++          executionSession.browser_id,
+           { code: rawCode!, language, timeout, origin },
+           {
+-            sessionId: session.id,
++            sessionId: executionSession.id,
+             scrapeId,
+             teamId: req.auth.team_id,
+             ...traceIdentity,
+@@ -413,7 +460,7 @@ async function scrapeInteractInternal(
+ 
+       enqueueBrowserSessionActivity({
+         team_id: req.auth.team_id,
+-        session_id: session.id,
++        session_id: executionSession.id,
+         source: "interact",
+         language,
+         timeout,
+@@ -437,8 +484,8 @@ async function scrapeInteractInternal(
+ 
+     return res.status(200).json({
+       success: !hasError,
+-      sessionId: session.id,
+-      ...browserSessionLinks(session),
++      sessionId: executionSession.id,
++      ...browserSessionLinks(executionSession),
+       ...(agentOutput ? { output: agentOutput } : {}),
+       stdout: execResult.stdout,
+       result: execResult.result,
+@@ -484,6 +531,7 @@ async function createSessionForScrape(
        ...browserCreateRequestSchema.parse({}),
        ...browserOptions,
        scrapeId,
