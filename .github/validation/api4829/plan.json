@@ -11,13 +11,13 @@
     "apps/api/src/lib/browser-sessions.test.ts"
   ],
   "focused_tests": [
-    "apps/api/src/controllers/v2/__tests__/scrape-browser.test.ts"
+    "src/controllers/v2/__tests__/scrape-browser.test.ts"
   ],
   "tests": [
-    "apps/api/src/controllers/v2/__tests__/scrape-browser.test.ts",
-    "apps/api/src/controllers/v2/__tests__/browser-delete.test.ts",
-    "apps/api/src/lib/zdr-helpers.test.ts",
-    "apps/api/src/lib/zdr-queue.test.ts",
-    "apps/api/src/lib/browser-sessions.test.ts"
+    "src/controllers/v2/__tests__/scrape-browser.test.ts",
+    "src/controllers/v2/__tests__/browser-delete.test.ts",
+    "src/lib/zdr-helpers.test.ts",
+    "src/lib/zdr-queue.test.ts",
+    "src/lib/browser-sessions.test.ts"
   ]
 }
