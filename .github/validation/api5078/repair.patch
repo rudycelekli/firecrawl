@@ -1,95 +1,120 @@
 diff --git a/apps/api/src/lib/__tests__/extraction-nested-arrays.test.ts b/apps/api/src/lib/__tests__/extraction-nested-arrays.test.ts
-index c5c4395..c1f190e 100644
+index 0c19c18..9590de9 100644
 --- a/apps/api/src/lib/__tests__/extraction-nested-arrays.test.ts
 +++ b/apps/api/src/lib/__tests__/extraction-nested-arrays.test.ts
-@@ -209,6 +209,38 @@ for (const [mix, transform, deduplicate, merge] of [
-         }
+@@ -242,6 +242,18 @@ for (const [mix, transform, deduplicate, merge] of [
+           ],
+         },
+       ],
++      [
++        "allOf",
++        { allOf: [{ type: "array", items: { type: "number" } }, { minItems: 1 }] },
++      ],
++      [
++        "allOf with nested anyOf",
++        { allOf: [{ anyOf: [{ type: "array", items: { type: "number" } }, { type: "null" }] }, { minItems: 1 }] },
++      ],
++      [
++        "tuple allOf",
++        [{ allOf: [{ type: "array", items: { type: "number" } }, { minItems: 1 }] }],
++      ],
+       [
+         "tuple combinators",
+         [
+@@ -291,6 +303,8 @@ for (const [mix, transform, deduplicate, merge] of [
        });
      }
-+    for (const [label, items] of [
-+      ["anyOf", { anyOf: [{ type: "array", items: { type: "number" } }, { type: "string" }] }],
-+      ["oneOf", { oneOf: [{ type: "array", items: { type: "number" } }, { type: "null" }] }],
-+      ["nested combinators", { anyOf: [{ oneOf: [{ type: "array", items: { type: "number" } }, { type: "string" }] }, { type: "null" }] }],
-+      ["tuple combinators", [{ anyOf: [{ type: "array", items: { type: "number" } }, { type: "string" }] }]],
-+    ] as const) {
-+      it(`preserves matrix rows through valid ${label} item combinators`, async () => {
-+        const schema = { type: "object", properties: { matrix: { type: "array", items } } };
-+        const completions = [{ matrix: [[1, 2], [1, 2]] }, { matrix: [[3, 4]] }];
-+        const validate = new Ajv({ strictTuples: false }).compile(schema);
-+        expect(completions.every(completion => validate(completion))).toBe(true);
-+        const expected = { matrix: [[1, 2], [1, 2], [3, 4]] };
-+        expect(await mix(schema, {}, expected)).toEqual(expected);
-+        const transformed = transform(schema, completions);
-+        const result = await mix(schema, {}, merge(deduplicateForSchema(transformed, schema)));
-+        expect(validate(result)).toBe(true);
-+        expect(result).toEqual(expected);
-+      });
-+    }
-+    for (const items of [
-+      { anyOf: [{ type: "string" }, { type: "null" }] },
-+      { oneOf: [{ type: "string" }, { type: "null" }] },
-+      { type: "string", anyOf: [{ type: "array", items: { type: "number" } }, { type: "string" }] },
-+      { type: "string", oneOf: [{ type: "array", items: { type: "number" } }, { type: "string" }] },
-+    ]) {
-+      it(`flattens scalar wrappers with non-array or type-constrained combinators ${JSON.stringify(items)}`, async () => {
-+        const schema = { type: "object", properties: { values: { type: "array", items } } };
-+        const expected = { values: ["a", "b"] };
-+        expect(new Ajv().compile(schema)(expected)).toBe(true);
-+        expect(await mix(schema, {}, { values: [["a"], ["b"]] })).toEqual(expected);
-+      });
-+    }
-     it("retains scalar rank through the same completion producer pipeline", async () => {
-       const schema = {
-         type: "object",
+     for (const items of [
++      { allOf: [{ type: "string" }, { minLength: 1 }] },
++      { allOf: [{ anyOf: [{ type: "array", items: { type: "number" } }, { type: "string" }] }, { type: "string" }] },
+       { anyOf: [{ type: "string" }, { type: "null" }] },
+       { oneOf: [{ type: "string" }, { type: "null" }] },
+       {
 diff --git a/apps/api/src/lib/extract/fire-0/helpers/mix-schema-objs-f0.ts b/apps/api/src/lib/extract/fire-0/helpers/mix-schema-objs-f0.ts
-index d2a74f8..3e37cac 100644
+index cb88578..929d90e 100644
 --- a/apps/api/src/lib/extract/fire-0/helpers/mix-schema-objs-f0.ts
 +++ b/apps/api/src/lib/extract/fire-0/helpers/mix-schema-objs-f0.ts
-@@ -29,12 +29,15 @@ export async function mixSchemaObjects_F0(
+@@ -29,22 +29,31 @@ export async function mixSchemaObjects_F0(
        ) {
          // Preserve nested array values; flatten only scalar/object chunk wrappers.
          const items = schema.properties[key].items;
--        const allowsArrayValues = (item: any): boolean =>
--          item &&
--          typeof item === "object" &&
--          (item.type === "array" ||
--            (Array.isArray(item.type) && item.type.includes("array")) ||
--            (item.type === undefined && item.items !== undefined));
-+        const allowsArrayValues = (item: any): boolean => {
+-        const allowsArrayValues = (item: any): boolean => {
+-          if (!item || typeof item !== "object" || Array.isArray(item))
+-            return false;
+-          // An explicit non-array type still constrains combinator branches.
++        // Check type constraints throughout intersections before declaring rank.
++        // Full schema validation remains the caller's responsibility.
++        const permitsArrayType = (item: any): boolean => {
++          if (item === true) return true;
 +          if (!item || typeof item !== "object" || Array.isArray(item)) return false;
-+          // An explicit non-array type still constrains combinator branches.
-+          if (item.type !== undefined && item.type !== "array" &&
-+              !(Array.isArray(item.type) && item.type.includes("array"))) return false;
-+          return item.type !== undefined || item.items !== undefined ||
-+            [item.anyOf, item.oneOf].some(branches =>
-+              Array.isArray(branches) && branches.some(allowsArrayValues));
+           if (
+             item.type !== undefined &&
+             item.type !== "array" &&
+             !(Array.isArray(item.type) && item.type.includes("array"))
+-          )
++          ) return false;
++          return (
++            [item.anyOf, item.oneOf].every(
++              branches => !Array.isArray(branches) || branches.some(permitsArrayType),
++            ) &&
++            (!Array.isArray(item.allOf) || item.allOf.every(permitsArrayType))
++          );
 +        };
-         const nested = Array.isArray(items)
-           ? items.some(allowsArrayValues)
-           : allowsArrayValues(items);
++        const allowsArrayValues = (item: any): boolean => {
++          if (!item || typeof item !== "object" || Array.isArray(item) || !permitsArrayType(item))
+             return false;
+           return (
+             item.type !== undefined ||
+             item.items !== undefined ||
+-            [item.anyOf, item.oneOf].some(
+-              branches =>
+-                Array.isArray(branches) && branches.some(allowsArrayValues),
++            [item.anyOf, item.oneOf, item.allOf].some(
++              branches => Array.isArray(branches) && branches.some(allowsArrayValues),
+             )
+           );
+         };
 diff --git a/apps/api/src/lib/extract/helpers/mix-schema-objs.ts b/apps/api/src/lib/extract/helpers/mix-schema-objs.ts
-index 4ff223e..29b5682 100644
+index 8dfcc6d..b574f91 100644
 --- a/apps/api/src/lib/extract/helpers/mix-schema-objs.ts
 +++ b/apps/api/src/lib/extract/helpers/mix-schema-objs.ts
-@@ -29,12 +29,15 @@ export async function mixSchemaObjects(
+@@ -29,22 +29,31 @@ export async function mixSchemaObjects(
        ) {
          // Preserve nested array values; flatten only scalar/object chunk wrappers.
          const items = schema.properties[key].items;
--        const allowsArrayValues = (item: any): boolean =>
--          item &&
--          typeof item === "object" &&
--          (item.type === "array" ||
--            (Array.isArray(item.type) && item.type.includes("array")) ||
--            (item.type === undefined && item.items !== undefined));
-+        const allowsArrayValues = (item: any): boolean => {
+-        const allowsArrayValues = (item: any): boolean => {
+-          if (!item || typeof item !== "object" || Array.isArray(item))
+-            return false;
+-          // An explicit non-array type still constrains combinator branches.
++        // Check type constraints throughout intersections before declaring rank.
++        // Full schema validation remains the caller's responsibility.
++        const permitsArrayType = (item: any): boolean => {
++          if (item === true) return true;
 +          if (!item || typeof item !== "object" || Array.isArray(item)) return false;
-+          // An explicit non-array type still constrains combinator branches.
-+          if (item.type !== undefined && item.type !== "array" &&
-+              !(Array.isArray(item.type) && item.type.includes("array"))) return false;
-+          return item.type !== undefined || item.items !== undefined ||
-+            [item.anyOf, item.oneOf].some(branches =>
-+              Array.isArray(branches) && branches.some(allowsArrayValues));
+           if (
+             item.type !== undefined &&
+             item.type !== "array" &&
+             !(Array.isArray(item.type) && item.type.includes("array"))
+-          )
++          ) return false;
++          return (
++            [item.anyOf, item.oneOf].every(
++              branches => !Array.isArray(branches) || branches.some(permitsArrayType),
++            ) &&
++            (!Array.isArray(item.allOf) || item.allOf.every(permitsArrayType))
++          );
 +        };
-         const nested = Array.isArray(items)
-           ? items.some(allowsArrayValues)
-           : allowsArrayValues(items);
++        const allowsArrayValues = (item: any): boolean => {
++          if (!item || typeof item !== "object" || Array.isArray(item) || !permitsArrayType(item))
+             return false;
+           return (
+             item.type !== undefined ||
+             item.items !== undefined ||
+-            [item.anyOf, item.oneOf].some(
+-              branches =>
+-                Array.isArray(branches) && branches.some(allowsArrayValues),
++            [item.anyOf, item.oneOf, item.allOf].some(
++              branches => Array.isArray(branches) && branches.some(allowsArrayValues),
+             )
+           );
+         };

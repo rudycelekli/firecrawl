@@ -1,7 +1,7 @@
-name: Native precommit proof for reviewed extraction combinator repair
+name: Native precommit proof for reviewed allOf extraction repair
 on:
   push:
-    branches: [validation/firecrawl5078-combinators-20261011]
+    branches: [validation/firecrawl5078-allof-20261012]
     paths: [.github/workflows/validate-5078-combinators.yml]
   workflow_dispatch:
     inputs:
@@ -12,7 +12,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: firecrawl5078-combinators-proof
+  group: firecrawl5078-allof-proof
   cancel-in-progress: false
 jobs:
   api:
@@ -49,7 +49,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           repository: rudycelekli/firecrawl
-          ref: a43867025fefdf4e31790ea9e2cc900ea9cf8c34
+          ref: 5d9f42d70a76e034267f313ed94fc03c3db8bc4a
           path: source
           fetch-depth: 0
           persist-credentials: false
@@ -101,7 +101,7 @@ jobs:
       - uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808
         if: always()
         with:
-          name: reviewed-api5078-combinators-native-proof
+          name: reviewed-api5078-allof-native-proof
           path: ${{ runner.temp }}/proof/
           if-no-files-found: error
           retention-days: 7

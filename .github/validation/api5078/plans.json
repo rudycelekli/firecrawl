@@ -1,8 +1,8 @@
 [
   {
     "number": 5078,
-    "head": "a43867025fefdf4e31790ea9e2cc900ea9cf8c34",
-    "patch_sha256": "adc57ab564a3d68ed004e36095a4ee5ac2842193994007e61b3c86480ffab977",
+    "head": "5d9f42d70a76e034267f313ed94fc03c3db8bc4a",
+    "patch_sha256": "50938cdfb2780f4ca6aa4b71eefb2cef4efb7ee22f519add72dc7328bc2a5d04",
     "allowed_files": [
       "apps/api/src/lib/extract/helpers/mix-schema-objs.ts",
       "apps/api/src/lib/extract/fire-0/helpers/mix-schema-objs-f0.ts",
@@ -15,8 +15,8 @@
     ],
     "native_tree": "ec5e6efbd9d499006f7e2fdc289d122add01df16",
     "expected_regression": {
-      "name_pattern": "preserves matrix rows through valid (anyOf|oneOf|nested combinators|tuple combinators) item combinators",
-      "reason_pattern": "deeply equal"
+      "name_pattern": "preserves matrix rows through valid.*allOf",
+      "reason_pattern": "AssertionError|expected|to deeply equal"
     }
   }
 ]
