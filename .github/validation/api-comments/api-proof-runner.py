@@ -3,7 +3,8 @@ import hashlib,json,os,re,subprocess,sys,xml.etree.ElementTree as ET
 from pathlib import Path
 source=Path.cwd(); assets=Path(os.environ['API_PROOF_ASSETS']); proof=Path(os.environ['API_PROOF_OUTPUT']);proof.mkdir(parents=True,exist_ok=True)
 plans=json.loads((assets/'plans.json').read_text());selected=os.environ.get('SELECTED_PR','all')
-if selected=='remaining':plans=[p for p in plans if p['number']>=5074]
+if selected=='last-two':plans=[p for p in plans if p['number']>=5078]
+elif selected=='remaining':plans=[p for p in plans if p['number']>=5074]
 elif selected!='all':plans=[p for p in plans if str(p['number'])==selected]
 assert plans
 base='6f892bc5026efc6355d017ec38dfffb84c228100'
