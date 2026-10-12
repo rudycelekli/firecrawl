@@ -1,4 +1,4 @@
-name: Native precommit proof for reviewed allOf extraction repair
+name: Native precommit proof for reviewed const and enum extraction repair
 on:
   push:
     branches: [validation/firecrawl5078-allof-20261012]
@@ -49,7 +49,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           repository: rudycelekli/firecrawl
-          ref: 5d9f42d70a76e034267f313ed94fc03c3db8bc4a
+          ref: f28e8321e36657534b95e52f1af7744ecfe9a682
           path: source
           fetch-depth: 0
           persist-credentials: false

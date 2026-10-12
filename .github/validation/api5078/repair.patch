@@ -1,120 +1,130 @@
 diff --git a/apps/api/src/lib/__tests__/extraction-nested-arrays.test.ts b/apps/api/src/lib/__tests__/extraction-nested-arrays.test.ts
-index 0c19c18..9590de9 100644
+index 5647013..984ef85 100644
 --- a/apps/api/src/lib/__tests__/extraction-nested-arrays.test.ts
 +++ b/apps/api/src/lib/__tests__/extraction-nested-arrays.test.ts
-@@ -242,6 +242,18 @@ for (const [mix, transform, deduplicate, merge] of [
-           ],
-         },
-       ],
-+      [
-+        "allOf",
-+        { allOf: [{ type: "array", items: { type: "number" } }, { minItems: 1 }] },
-+      ],
-+      [
-+        "allOf with nested anyOf",
-+        { allOf: [{ anyOf: [{ type: "array", items: { type: "number" } }, { type: "null" }] }, { minItems: 1 }] },
-+      ],
-+      [
-+        "tuple allOf",
-+        [{ allOf: [{ type: "array", items: { type: "number" } }, { minItems: 1 }] }],
-+      ],
-       [
-         "tuple combinators",
-         [
-@@ -291,6 +303,8 @@ for (const [mix, transform, deduplicate, merge] of [
+@@ -366,6 +366,69 @@ for (const [mix, transform, deduplicate, merge] of [
+         );
        });
      }
-     for (const items of [
-+      { allOf: [{ type: "string" }, { minLength: 1 }] },
-+      { allOf: [{ anyOf: [{ type: "array", items: { type: "number" } }, { type: "string" }] }, { type: "string" }] },
-       { anyOf: [{ type: "string" }, { type: "null" }] },
-       { oneOf: [{ type: "string" }, { type: "null" }] },
-       {
++    for (const [label, constraint, values] of [
++      ["scalar const", { const: "a" }, ["a", "a"]],
++      ["scalar enum", { enum: ["a", "b"] }, ["a", "b"]],
++      ["null const", { const: null }, [null, null]],
++      ["object enum", { enum: [{ id: 1 }, { id: 2 }] }, [{ id: 1 }, { id: 2 }]],
++    ] as const) {
++      it(`flattens valid scalar wrappers narrowed by allOf ${label}`, async () => {
++        const schema = {
++          type: "object",
++          properties: {
++            values: {
++              type: "array",
++              items: {
++                allOf: [
++                  { anyOf: [{ type: "array" }, {}] },
++                  constraint,
++                ],
++              },
++            },
++          },
++        };
++        const expected = { values };
++        const validate = new Ajv().compile(schema);
++        expect(validate(expected)).toBe(true);
++        const wrapped = { values: values.map(value => [value]) };
++        expect(validate(wrapped)).toBe(false);
++        const result = await mix(schema, {}, wrapped);
++        expect(result).toEqual(expected);
++        expect(validate(result)).toBe(true);
++      });
++    }
++    for (const [label, constraint, values] of [
++      ["array const", { const: [1, 2] }, [[1, 2], [1, 2]]],
++      ["array enum", { enum: [[1, 2], [3, 4]] }, [[1, 2], [3, 4]]],
++      ["mixed enum", { enum: [[1, 2], "a"] }, [[1, 2], "a"]],
++    ] as const) {
++      for (const intersected of [false, true]) {
++        it(`preserves valid ${label} rank ${intersected ? "inside allOf" : "directly"}`, async () => {
++          const schema = {
++            type: "object",
++            properties: {
++              values: {
++                type: "array",
++                items: intersected ? { allOf: [constraint, {}] } : constraint,
++              },
++            },
++          };
++          const completions = values.map(value => ({ values: [value] }));
++          const expected = { values };
++          const validate = new Ajv().compile(schema);
++          expect(completions.every(completion => validate(completion))).toBe(true);
++          expect(await mix(schema, {}, expected)).toEqual(expected);
++          const transformed = transform(schema, completions);
++          const result = await mix(
++            schema,
++            {},
++            merge(deduplicateForSchema(transformed, schema)),
++          );
++          expect(result).toEqual(expected);
++          expect(validate(result)).toBe(true);
++        });
++      }
++    }
+     it("retains scalar rank through the same completion producer pipeline", async () => {
+       const schema = {
+         type: "object",
 diff --git a/apps/api/src/lib/extract/fire-0/helpers/mix-schema-objs-f0.ts b/apps/api/src/lib/extract/fire-0/helpers/mix-schema-objs-f0.ts
-index cb88578..929d90e 100644
+index 77c134e..5b2dfdb 100644
 --- a/apps/api/src/lib/extract/fire-0/helpers/mix-schema-objs-f0.ts
 +++ b/apps/api/src/lib/extract/fire-0/helpers/mix-schema-objs-f0.ts
-@@ -29,22 +29,31 @@ export async function mixSchemaObjects_F0(
-       ) {
-         // Preserve nested array values; flatten only scalar/object chunk wrappers.
-         const items = schema.properties[key].items;
--        const allowsArrayValues = (item: any): boolean => {
--          if (!item || typeof item !== "object" || Array.isArray(item))
--            return false;
--          // An explicit non-array type still constrains combinator branches.
-+        // Check type constraints throughout intersections before declaring rank.
-+        // Full schema validation remains the caller's responsibility.
-+        const permitsArrayType = (item: any): boolean => {
-+          if (item === true) return true;
-+          if (!item || typeof item !== "object" || Array.isArray(item)) return false;
-           if (
-             item.type !== undefined &&
-             item.type !== "array" &&
+@@ -41,6 +41,13 @@ export async function mixSchemaObjects_F0(
              !(Array.isArray(item.type) && item.type.includes("array"))
--          )
-+          ) return false;
-+          return (
-+            [item.anyOf, item.oneOf].every(
-+              branches => !Array.isArray(branches) || branches.some(permitsArrayType),
-+            ) &&
-+            (!Array.isArray(item.allOf) || item.allOf.every(permitsArrayType))
-+          );
-+        };
-+        const allowsArrayValues = (item: any): boolean => {
-+          if (!item || typeof item !== "object" || Array.isArray(item) || !permitsArrayType(item))
+           )
              return false;
++          if (Object.hasOwn(item, "const") && !Array.isArray(item.const))
++            return false;
++          if (
++            Array.isArray(item.enum) &&
++            !item.enum.some((value: any) => Array.isArray(value))
++          )
++            return false;
+           return (
+             [item.anyOf, item.oneOf].every(
+               branches =>
+@@ -60,6 +67,9 @@ export async function mixSchemaObjects_F0(
            return (
              item.type !== undefined ||
              item.items !== undefined ||
--            [item.anyOf, item.oneOf].some(
--              branches =>
--                Array.isArray(branches) && branches.some(allowsArrayValues),
-+            [item.anyOf, item.oneOf, item.allOf].some(
-+              branches => Array.isArray(branches) && branches.some(allowsArrayValues),
-             )
-           );
-         };
++            Array.isArray(item.const) ||
++            (Array.isArray(item.enum) &&
++              item.enum.some((value: any) => Array.isArray(value))) ||
+             [item.anyOf, item.oneOf, item.allOf].some(
+               branches =>
+                 Array.isArray(branches) && branches.some(allowsArrayValues),
 diff --git a/apps/api/src/lib/extract/helpers/mix-schema-objs.ts b/apps/api/src/lib/extract/helpers/mix-schema-objs.ts
-index 8dfcc6d..b574f91 100644
+index ff6659e..47e6171 100644
 --- a/apps/api/src/lib/extract/helpers/mix-schema-objs.ts
 +++ b/apps/api/src/lib/extract/helpers/mix-schema-objs.ts
-@@ -29,22 +29,31 @@ export async function mixSchemaObjects(
-       ) {
-         // Preserve nested array values; flatten only scalar/object chunk wrappers.
-         const items = schema.properties[key].items;
--        const allowsArrayValues = (item: any): boolean => {
--          if (!item || typeof item !== "object" || Array.isArray(item))
--            return false;
--          // An explicit non-array type still constrains combinator branches.
-+        // Check type constraints throughout intersections before declaring rank.
-+        // Full schema validation remains the caller's responsibility.
-+        const permitsArrayType = (item: any): boolean => {
-+          if (item === true) return true;
-+          if (!item || typeof item !== "object" || Array.isArray(item)) return false;
-           if (
-             item.type !== undefined &&
-             item.type !== "array" &&
+@@ -41,6 +41,13 @@ export async function mixSchemaObjects(
              !(Array.isArray(item.type) && item.type.includes("array"))
--          )
-+          ) return false;
-+          return (
-+            [item.anyOf, item.oneOf].every(
-+              branches => !Array.isArray(branches) || branches.some(permitsArrayType),
-+            ) &&
-+            (!Array.isArray(item.allOf) || item.allOf.every(permitsArrayType))
-+          );
-+        };
-+        const allowsArrayValues = (item: any): boolean => {
-+          if (!item || typeof item !== "object" || Array.isArray(item) || !permitsArrayType(item))
+           )
              return false;
++          if (Object.hasOwn(item, "const") && !Array.isArray(item.const))
++            return false;
++          if (
++            Array.isArray(item.enum) &&
++            !item.enum.some((value: any) => Array.isArray(value))
++          )
++            return false;
+           return (
+             [item.anyOf, item.oneOf].every(
+               branches =>
+@@ -60,6 +67,9 @@ export async function mixSchemaObjects(
            return (
              item.type !== undefined ||
              item.items !== undefined ||
--            [item.anyOf, item.oneOf].some(
--              branches =>
--                Array.isArray(branches) && branches.some(allowsArrayValues),
-+            [item.anyOf, item.oneOf, item.allOf].some(
-+              branches => Array.isArray(branches) && branches.some(allowsArrayValues),
-             )
-           );
-         };
++            Array.isArray(item.const) ||
++            (Array.isArray(item.enum) &&
++              item.enum.some((value: any) => Array.isArray(value))) ||
+             [item.anyOf, item.oneOf, item.allOf].some(
+               branches =>
+                 Array.isArray(branches) && branches.some(allowsArrayValues),
