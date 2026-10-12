@@ -1,5 +1,5 @@
 diff --git a/apps/api/src/controllers/v2/__tests__/scrape-browser.test.ts b/apps/api/src/controllers/v2/__tests__/scrape-browser.test.ts
-index 401485b..e41ad93 100644
+index 401485b..a7aec3b 100644
 --- a/apps/api/src/controllers/v2/__tests__/scrape-browser.test.ts
 +++ b/apps/api/src/controllers/v2/__tests__/scrape-browser.test.ts
 @@ -3,6 +3,9 @@ import { readScrapeJobState } from "../../../lib/job-state-store";
@@ -50,7 +50,7 @@ index 401485b..e41ad93 100644
      vi.mocked(getBrowserSession).mockResolvedValue(null);
    });
  
-@@ -241,6 +254,156 @@ describe("scrapeInteractController", () => {
+@@ -241,6 +254,159 @@ describe("scrapeInteractController", () => {
        vi.mocked(executeHangarBrowser).mockResolvedValue(output);
      });
  
@@ -80,6 +80,9 @@ index 401485b..e41ad93 100644
 +          stored = row;
 +          return row as any;
 +        });
++        // A lookup abort leaves a queued link implementation unused. Clear
++        // that queue so subsequent lease phases exercise their own fixture.
++        vi.mocked(updateBrowserSessionScrapeId).mockReset();
 +        vi.mocked(updateBrowserSessionScrapeId).mockImplementation(async (id, scrapeId) => {
 +          expect(isZeroDataRetentionActive()).toBe(true);
 +          expect(id).toBe(stored.id);
@@ -100,7 +103,7 @@ index 401485b..e41ad93 100644
 +      afterEach(() => {
 +        vi.mocked(readScrapeJobState).mockResolvedValue(null);
 +        vi.mocked(getBrowserSessionFromScrape).mockResolvedValue(null);
-+        vi.mocked(updateBrowserSessionScrapeId).mockResolvedValue(undefined);
++        vi.mocked(updateBrowserSessionScrapeId).mockReset().mockResolvedValue(undefined);
 +        vi.mocked(insertBrowserSession).mockImplementation(async row => row as any);
 +        vi.mocked(executeCodeViaBrowserSession).mockReset();
 +        vi.mocked(stopHangarBrowser).mockReset();
@@ -207,7 +210,7 @@ index 401485b..e41ad93 100644
      it.each(["allowed", "forced"] as const)(
        "persists ZDR and redacts request logging when the team policy is %s",
        async mode => {
-@@ -719,4 +882,24 @@ describe("scrapeInteractController", () => {
+@@ -719,4 +885,24 @@ describe("scrapeInteractController", () => {
    });
  });
  
