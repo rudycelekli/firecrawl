@@ -1,0 +1,107 @@
+name: Native precommit proof for reviewed extraction combinator repair
+on:
+  push:
+    branches: [validation/firecrawl5078-combinators-20261011]
+    paths: [.github/workflows/validate-5078-combinators.yml]
+  workflow_dispatch:
+    inputs:
+      pr:
+        type: choice
+        default: '5078'
+        options: ['5078']
+permissions:
+  contents: read
+concurrency:
+  group: firecrawl5078-combinators-proof
+  cancel-in-progress: false
+jobs:
+  api:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    services:
+      redis:
+        image: redis:7
+        ports: ['6379:6379']
+      rabbitmq:
+        image: rabbitmq:3-management
+        ports: ['5672:5672']
+    env:
+      HOST: 0.0.0.0
+      ENV: test
+      TEST_SUITE_SELF_HOSTED: 'true'
+      TEST_API_KEY: test
+      TEST_TEAM_ID: bypass
+      USE_DB_AUTHENTICATION: 'false'
+      REDIS_URL: redis://127.0.0.1:6379
+      REDIS_RATE_LIMIT_URL: redis://127.0.0.1:6379
+      NUQ_RABBITMQ_URL: amqp://127.0.0.1:5672
+      NUQ_WORKER_COUNT: '1'
+      NUM_WORKERS_PER_QUEUE: '1'
+      USE_GO_MARKDOWN_PARSER: 'true'
+      ALLOW_LOCAL_WEBHOOKS: 'true'
+      FDB_VERSION: 7.3.63
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          path: validation
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: rudycelekli/firecrawl
+          ref: a43867025fefdf4e31790ea9e2cc900ea9cf8c34
+          path: source
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320
+        with:
+          version: 11.4.0
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: '22'
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
+        with:
+          go-version: '1.26'
+          cache: false
+      - name: Record runtime and install FoundationDB client
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/proof"
+          { git rev-parse HEAD; node --version; pnpm --version; go version; rustc --version; uname -a; } > "$RUNNER_TEMP/proof/runtime.txt"
+          curl -fsSL -o "$RUNNER_TEMP/fdb-clients.deb" "https://github.com/apple/foundationdb/releases/download/${FDB_VERSION}/foundationdb-clients_${FDB_VERSION}-1_amd64.deb"
+          sha256sum "$RUNNER_TEMP/fdb-clients.deb" > "$RUNNER_TEMP/proof/fdb-client.sha256"
+          sudo dpkg -i "$RUNNER_TEMP/fdb-clients.deb"
+      - name: Build actual native module once, retaining only job-local compile cache
+        working-directory: source/apps/api/native
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout -k 30s 15m pnpm install --frozen-lockfile 2>&1 | tee "$RUNNER_TEMP/proof/native-install.log"
+      - name: Install exact API lockfile using upstream CI bootstrap
+        working-directory: source/apps/api
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm install --frozen-lockfile --ignore-scripts 2>&1 | tee "$RUNNER_TEMP/proof/api-install.log"
+      - name: Sequential original or mutation failures and repaired native passes
+        working-directory: source
+        shell: bash
+        env:
+          API_PROOF_ASSETS: ${{ github.workspace }}/validation/.github/validation/api5078
+          API_PROOF_OUTPUT: ${{ runner.temp }}/proof
+          SELECTED_PR: ${{ inputs.pr || '5078' }}
+        run: |
+          set -euo pipefail
+          # Runner does not commit/push. It runs real knip/lint-staged on staged
+          # authored files, preserves their final formatting, hashes all tracked
+          # contents, runs real harness before/after, and fails any dirty drift.
+          python3 "$API_PROOF_ASSETS/api-proof-runner.py"
+      - uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808
+        if: always()
+        with:
+          name: reviewed-api5078-combinators-native-proof
+          path: ${{ runner.temp }}/proof/
+          if-no-files-found: error
+          retention-days: 7

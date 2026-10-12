@@ -1,0 +1,22 @@
+[
+  {
+    "number": 5078,
+    "head": "a43867025fefdf4e31790ea9e2cc900ea9cf8c34",
+    "patch_sha256": "adc57ab564a3d68ed004e36095a4ee5ac2842193994007e61b3c86480ffab977",
+    "allowed_files": [
+      "apps/api/src/lib/extract/helpers/mix-schema-objs.ts",
+      "apps/api/src/lib/extract/fire-0/helpers/mix-schema-objs-f0.ts",
+      "apps/api/src/lib/__tests__/extraction-nested-arrays.test.ts"
+    ],
+    "tests": [
+      "src/lib/__tests__/extraction-nested-arrays.test.ts",
+      "src/lib/__tests__/deduplicate-obs-array.test.ts",
+      "src/lib/__tests__/mix-schemas.test.ts"
+    ],
+    "native_tree": "ec5e6efbd9d499006f7e2fdc289d122add01df16",
+    "expected_regression": {
+      "name_pattern": "preserves matrix rows through valid (anyOf|oneOf|nested combinators|tuple combinators) item combinators",
+      "reason_pattern": "deeply equal"
+    }
+  }
+]
